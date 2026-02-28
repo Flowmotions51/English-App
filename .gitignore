@@ -1,0 +1,6 @@
+backend/.gradle/
+backend/build/
+frontend/.DS_Store
+.idea/
+*.iml
+/.gradle

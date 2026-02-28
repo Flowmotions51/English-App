@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: english-app-postgres
+    environment:
+      POSTGRES_DB: english_app
+      POSTGRES_USER: english_app
+      POSTGRES_PASSWORD: english_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
