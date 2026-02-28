@@ -21,7 +21,7 @@ const state = {
     mindMapLastPositions: null,
     draggingNodeId: null,
     mindMapJustDragged: false,
-    currentCubeFace: 0
+    currentSection: 0
 };
 
 const appEl = document.getElementById("app");
@@ -439,76 +439,17 @@ function renderApp() {
     const notificationsCount = state.pendingSessions.filter((session) => session.isDueNow && !session.notificationRead).length;
 
     appEl.innerHTML = html`
-      <section class="cube-app-wrap" id="cubeAppWrap">
-        <div class="cube-app-inner" id="cubeAppInner" data-list-open="${state.selectedListId ? "1" : "0"}">
-          <div class="cube-panel-main">
-            <div class="cube-viewport" id="cubeViewport">
-              <div class="cube-container" id="cubeContainer" style="transform: translateX(-${state.currentCubeFace * 25}%)">
-                <div class="cube-face">
-                  <div class="cube-face-inner card">
-                    <h3>Sentence Lists</h3>
-                    <div class="row">
-                      <input id="newListName" placeholder="New list name" />
-                      <button id="createListBtn">Create</button>
-                    </div>
-                    <ul class="lists-list">
-                      ${state.lists.map((list) => html`
-                        <li class="list-item" data-list-id="${list.id}">
-                          <div class="list-item-main" role="button" tabindex="0" title="Open list">
-                            <div><b>${escapeHtml(list.name)}</b></div>
-                            <div class="hint">Created: ${new Date(list.createdAt).toLocaleString()}</div>
-                          </div>
-                          <div class="row list-actions">
-                            <button type="button" data-list-open="${list.id}" class="btn-icon secondary" title="Open">📂</button>
-                            <button type="button" data-list-rename="${list.id}" class="btn-icon secondary" title="Rename">✏️</button>
-                            <button type="button" data-list-delete="${list.id}" class="btn-icon danger" title="Delete">🗑️</button>
-                          </div>
-                        </li>
-                      `).join("")}
-                    </ul>
-                    <p class="hint">Tap a list to open it. Swipe left/right for other sections.</p>
-                  </div>
-                </div>
-          <div class="cube-face">
-            <div class="cube-face-inner card">
-              <h3>Pending Reviews (${notificationsCount})</h3>
-              <div id="pendingReviews"></div>
-            </div>
-          </div>
-          <div class="cube-face">
-            <div class="cube-face-inner card">
-              <h3>Settings</h3>
-              <div class="hint">Merge window defines how close due sentences are grouped in one session.</div>
-              <div class="row">
-                <input id="mergeWindowInput" type="number" min="10" value="${state.settings.mergeWindowMinutes}" />
-                <select id="weeklyDayInput">
-                  ${[1,2,3,4,5,6,7].map((d) => html`<option value="${d}" ${state.settings.weeklyReviewDay === d ? "selected" : ""}>Day ${d}</option>`).join("")}
-                </select>
-              </div>
-              <input id="timezoneInput" value="${escapeHtml(state.settings.timezone)}" placeholder="Timezone, e.g. UTC or Europe/Berlin" />
-              <button id="saveSettingsBtn">Save settings</button>
-            </div>
-          </div>
-          <div class="cube-face">
-            <div class="cube-face-inner card mind-map-section">
-              <h3>Mind Map (all lists)</h3>
-              <p class="hint">Circles from the same list are connected. Drag to move; swipe left/right to change section.</p>
-              <canvas id="mindMap" width="900" height="480"></canvas>
-            </div>
-          </div>
+      <section class="dashboard container">
+        <div class="dashboard-tabs" role="tablist">
+          <button type="button" class="dashboard-tab ${state.currentSection === 0 ? "active" : ""}" data-section="0" role="tab">Lists</button>
+          <button type="button" class="dashboard-tab ${state.currentSection === 1 ? "active" : ""}" data-section="1" role="tab">Reviews</button>
+          <button type="button" class="dashboard-tab ${state.currentSection === 2 ? "active" : ""}" data-section="2" role="tab">Settings</button>
+          <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
         </div>
-        <div class="cube-dots" aria-hidden="true">
-          <button type="button" class="cube-dot ${state.currentCubeFace === 0 ? "active" : ""}" data-cube-face="0" title="Sentence Lists">1</button>
-          <button type="button" class="cube-dot ${state.currentCubeFace === 1 ? "active" : ""}" data-cube-face="1" title="Pending Reviews">2</button>
-          <button type="button" class="cube-dot ${state.currentCubeFace === 2 ? "active" : ""}" data-cube-face="2" title="Settings">3</button>
-          <button type="button" class="cube-dot ${state.currentCubeFace === 3 ? "active" : ""}" data-cube-face="3" title="Mind Map">4</button>
-        </div>
-          </div>
-          <div class="cube-panel-list-detail" id="cubePanelListDetail">
-            <div class="cube-list-detail-inner card">
+        <div class="dashboard-content">
+          ${state.selectedListId ? html`
+            <div class="dashboard-list-detail card">
               <button type="button" id="showListsBtn" class="show-lists-btn secondary">← Lists</button>
-              <button type="button" id="showListsBtnHeader" class="show-lists-btn show-lists-btn-header list-detail-back">← ${selectedList ? escapeHtml(selectedList.name) : "List"}</button>
-              <p class="hint list-detail-swipe-hint">Swipe up to return to lists</p>
               <h2 class="dashboard-content-title">${selectedList ? escapeHtml(selectedList.name) : ""}</h2>
               ${selectedList ? html`
                 <div class="row">
@@ -533,150 +474,88 @@ function renderApp() {
                     </li>
                   `).join("")}
                 </ul>
-              ` : "<p>Select a list from the cube to open it.</p>"}
+              ` : ""}
             </div>
-          </div>
+          ` : html`
+            <div class="dashboard-panel card" data-section="0" style="display: ${state.currentSection === 0 ? "block" : "none"}">
+              <h3>Sentence Lists</h3>
+              <div class="row">
+                <input id="newListName" placeholder="New list name" />
+                <button id="createListBtn">Create</button>
+              </div>
+              <ul class="lists-list">
+                ${state.lists.map((list) => html`
+                  <li class="list-item" data-list-id="${list.id}">
+                    <div class="list-item-main" role="button" tabindex="0" title="Open list">
+                      <div><b>${escapeHtml(list.name)}</b></div>
+                      <div class="hint">Created: ${new Date(list.createdAt).toLocaleString()}</div>
+                    </div>
+                    <div class="row list-actions">
+                      <button type="button" data-list-open="${list.id}" class="btn-icon secondary" title="Open">📂</button>
+                      <button type="button" data-list-rename="${list.id}" class="btn-icon secondary" title="Rename">✏️</button>
+                      <button type="button" data-list-delete="${list.id}" class="btn-icon danger" title="Delete">🗑️</button>
+                    </div>
+                  </li>
+                `).join("")}
+              </ul>
+            </div>
+            <div class="dashboard-panel card" data-section="1" style="display: ${state.currentSection === 1 ? "block" : "none"}">
+              <h3>Pending Reviews (${notificationsCount})</h3>
+              <div id="pendingReviews"></div>
+            </div>
+            <div class="dashboard-panel card" data-section="2" style="display: ${state.currentSection === 2 ? "block" : "none"}">
+              <h3>Settings</h3>
+              <div class="hint">Merge window defines how close due sentences are grouped in one session.</div>
+              <div class="row">
+                <input id="mergeWindowInput" type="number" min="10" value="${state.settings.mergeWindowMinutes}" />
+                <select id="weeklyDayInput">
+                  ${[1,2,3,4,5,6,7].map((d) => html`<option value="${d}" ${state.settings.weeklyReviewDay === d ? "selected" : ""}>Day ${d}</option>`).join("")}
+                </select>
+              </div>
+              <input id="timezoneInput" value="${escapeHtml(state.settings.timezone)}" placeholder="Timezone, e.g. UTC or Europe/Berlin" />
+              <button id="saveSettingsBtn">Save settings</button>
+            </div>
+            <div class="dashboard-panel card mind-map-section" data-section="3" style="display: ${state.currentSection === 3 ? "block" : "none"}">
+              <h3>Mind Map (all lists)</h3>
+              <p class="hint">Circles from the same list are connected. Drag to move.</p>
+              <canvas id="mindMap" width="900" height="480"></canvas>
+            </div>
+          `}
         </div>
       </section>
     `;
 
     bindDashboardActions();
-    bindCubeActions();
-    bindListDetailPanel();
+    bindDashboardTabs();
     renderPendingReviews();
     renderMindMap();
 }
 
-function goBackToList() {
-    const inner = document.getElementById("cubeAppInner");
-    if (!inner) return;
-    inner.classList.remove("cube-app-inner--list-open");
-    inner.addEventListener("transitionend", function onEnd() {
-        inner.removeEventListener("transitionend", onEnd);
-        state.selectedListId = null;
-        renderApp();
-    }, { once: true });
-}
-
-function bindListDetailPanel() {
-    const inner = document.getElementById("cubeAppInner");
-    const panelDetail = document.getElementById("cubePanelListDetail");
-    if (!inner) return;
-
-    if (state.selectedListId) {
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                inner.classList.add("cube-app-inner--list-open");
+function bindDashboardTabs() {
+    document.querySelectorAll(".dashboard-tab").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const section = parseInt(btn.getAttribute("data-section"), 10);
+            if (Number.isNaN(section) || section === state.currentSection) return;
+            state.currentSection = section;
+            document.querySelectorAll(".dashboard-tab").forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            document.querySelectorAll(".dashboard-panel").forEach((panel) => {
+                const s = parseInt(panel.getAttribute("data-section"), 10);
+                panel.style.display = s === section ? "block" : "none";
             });
+            if (section === 3) {
+                renderMindMap();
+            }
         });
-    }
+    });
 
     const showListsBtn = document.getElementById("showListsBtn");
-    const showListsBtnHeader = document.querySelector(".list-detail-back");
-    if (showListsBtn) showListsBtn.addEventListener("click", goBackToList);
-    if (showListsBtnHeader) showListsBtnHeader.addEventListener("click", goBackToList);
-
-    if (panelDetail) {
-        let startY = 0;
-        panelDetail.addEventListener("touchstart", (e) => {
-            if (e.touches.length === 1) startY = e.touches[0].clientY;
-        }, { passive: true });
-        panelDetail.addEventListener("touchend", (e) => {
-            if (e.changedTouches.length !== 1) return;
-            const endY = e.changedTouches[0].clientY;
-            if (startY - endY > 60) goBackToList();
+    if (showListsBtn) {
+        showListsBtn.addEventListener("click", () => {
+            state.selectedListId = null;
+            renderApp();
         });
     }
-}
-
-function setCubeFace(index) {
-    const i = Math.max(0, Math.min(3, index));
-    if (state.currentCubeFace === i) return;
-    state.currentCubeFace = i;
-    const container = document.getElementById("cubeContainer");
-    const dots = document.querySelectorAll(".cube-dot");
-    if (container) container.style.transform = `translateX(-${i * 25}%)`;
-    dots.forEach((dot, idx) => dot.classList.toggle("active", idx === i));
-}
-
-function bindCubeActions() {
-    const viewport = document.getElementById("cubeViewport");
-    const container = document.getElementById("cubeContainer");
-    if (!viewport || !container) return;
-
-    let startX = 0;
-    let startY = 0;
-    let isDragging = false;
-    let isHorizontalSwipe = null;
-
-    function onPointerStart(clientX, clientY) {
-        startX = clientX;
-        startY = clientY || 0;
-        isDragging = true;
-        isHorizontalSwipe = null;
-        container.style.transition = "none";
-    }
-    function onPointerMove(clientX, clientY) {
-        if (!isDragging) return;
-        const deltaX = clientX - startX;
-        const deltaY = (clientY ?? startY) - startY;
-        if (isHorizontalSwipe === null) {
-            isHorizontalSwipe = Math.abs(deltaX) > Math.abs(deltaY);
-        }
-        if (!isHorizontalSwipe) return;
-        const viewportW = viewport.clientWidth || 1;
-        const percentPerPx = (25 / viewportW);
-        const basePercent = state.currentCubeFace * 25;
-        const dragPercent = basePercent - (deltaX * percentPerPx);
-        const clamped = Math.max(0, Math.min(75, dragPercent));
-        container.style.transform = `translateX(-${clamped}%)`;
-    }
-    function onPointerEnd(clientX) {
-        if (!isDragging) return;
-        isDragging = false;
-        container.style.transition = "";
-        const delta = clientX - startX;
-        const threshold = 50;
-        if (isHorizontalSwipe && delta > threshold) setCubeFace(state.currentCubeFace - 1);
-        else if (isHorizontalSwipe && delta < -threshold) setCubeFace(state.currentCubeFace + 1);
-        else container.style.transform = `translateX(-${state.currentCubeFace * 25}%)`;
-    }
-
-    viewport.addEventListener("touchstart", (e) => {
-        if (e.touches.length !== 1) return;
-        onPointerStart(e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: true });
-    viewport.addEventListener("touchmove", (e) => {
-        if (e.touches.length !== 1) return;
-        if (isHorizontalSwipe === true && isDragging) e.preventDefault();
-        onPointerMove(e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: false });
-    viewport.addEventListener("touchend", (e) => {
-        if (e.changedTouches.length !== 1) return;
-        onPointerEnd(e.changedTouches[0].clientX);
-    });
-    viewport.addEventListener("touchcancel", (e) => {
-        if (e.changedTouches.length) onPointerEnd(e.changedTouches[0].clientX);
-    });
-
-    viewport.addEventListener("mousedown", (e) => {
-        onPointerStart(e.clientX, e.clientY);
-        const moveHandler = (e2) => onPointerMove(e2.clientX, e2.clientY);
-        const upHandler = (e2) => {
-            onPointerEnd(e2.clientX);
-            document.removeEventListener("mousemove", moveHandler);
-            document.removeEventListener("mouseup", upHandler);
-        };
-        document.addEventListener("mousemove", moveHandler);
-        document.addEventListener("mouseup", upHandler);
-    });
-
-    document.querySelectorAll(".cube-dot").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const face = parseInt(btn.getAttribute("data-cube-face"), 10);
-            if (!Number.isNaN(face)) setCubeFace(face);
-        });
-    });
 }
 
 function renderReviewSessionPage() {

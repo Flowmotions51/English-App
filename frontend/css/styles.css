@@ -47,180 +47,51 @@ body {
     gap: 16px;
 }
 
-/* App: main carousel + list detail panel (slide up when list open) */
-.cube-app-wrap {
-    position: relative;
-    width: 100%;
-    max-width: 100%;
-    height: calc(100vh - 80px);
-    min-height: 400px;
-    overflow: hidden;
+/* Dashboard: tabs + content panels */
+.dashboard {
+    padding-top: 12px;
 }
 
-.cube-app-inner {
-    position: relative;
-    width: 100%;
-    height: 100%;
-}
-
-.cube-panel-main {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    transition: transform 0.35s ease-out;
-}
-
-.cube-app-inner.cube-app-inner--list-open .cube-panel-main {
-    transform: translateY(-100%);
-}
-
-.cube-panel-list-detail {
-    position: absolute;
-    left: 0;
-    top: 100%;
-    width: 100%;
-    height: 100%;
-    transition: transform 0.35s ease-out;
-    overflow: auto;
-    -webkit-overflow-scrolling: touch;
-    background: #f4f6f9;
-}
-
-.cube-app-inner.cube-app-inner--list-open .cube-panel-list-detail {
-    transform: translateY(-100%);
-}
-
-.cube-list-detail-inner {
-    min-height: 100%;
-    padding: 16px;
-    padding-left: max(16px, env(safe-area-inset-left));
-    padding-right: max(16px, env(safe-area-inset-right));
-    padding-bottom: 80px;
-    box-sizing: border-box;
-}
-
-.list-detail-swipe-hint {
-    margin: 4px 0 12px 0;
-}
-
-/* 2D carousel: four sections side by side, swipe to slide (no 3D distortion) */
-.cube-viewport {
-    position: relative;
-    width: 100%;
-    max-width: 100%;
-    margin: 0;
-    padding: 0;
-    height: 100%;
-    min-height: 400px;
-    overflow: hidden;
-    touch-action: pan-y;
-    box-sizing: border-box;
-}
-
-.cube-container {
-    position: absolute;
-    left: 0;
-    top: 0;
-    height: 100%;
-    width: 400%;
+.dashboard-tabs {
     display: flex;
-    flex-direction: row;
-    transition: transform 0.35s ease-out;
-    box-sizing: border-box;
+    gap: 4px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
 }
 
-.cube-face {
-    width: 25%;
-    flex-shrink: 0;
-    height: 100%;
-    box-sizing: border-box;
-    display: flex;
-    align-items: stretch;
-    justify-content: center;
-    pointer-events: none;
-}
-
-.cube-face-inner {
-    pointer-events: auto;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    overflow-x: hidden;
-    padding: 16px;
-    padding-left: max(16px, env(safe-area-inset-left));
-    padding-right: max(16px, env(safe-area-inset-right));
-    padding-bottom: 60px;
-    -webkit-overflow-scrolling: touch;
-    box-sizing: border-box;
-}
-
-.cube-face-inner .card {
-    max-width: 100%;
-    min-width: 0;
-}
-
-.cube-face-inner input,
-.cube-face-inner select,
-.cube-face-inner ul,
-.cube-face-inner .row {
-    max-width: 100%;
-}
-
-.cube-face-inner .list-item,
-.cube-face-inner .sentence-item,
-.cube-face-inner .card {
-    overflow-wrap: break-word;
-    word-break: break-word;
-}
-
-.cube-dots {
-    position: absolute;
-    bottom: 12px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    gap: 10px;
-    z-index: 10;
-    padding: 8px 12px;
-    background: rgba(255, 255, 255, 0.9);
-    border-radius: 24px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-}
-
-.cube-dot {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
+.dashboard-tab {
+    padding: 8px 16px;
     border: 2px solid #1f3b66;
     background: #fff;
     color: #1f3b66;
-    font-size: 0.85rem;
+    font: inherit;
     font-weight: 600;
+    border-radius: 8px;
     cursor: pointer;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     transition: background 0.2s, color 0.2s;
-    touch-action: manipulation;
 }
 
-.cube-dot:hover {
+.dashboard-tab:hover {
     background: #e8eef7;
 }
 
-.cube-dot.active {
+.dashboard-tab.active {
     background: #1f3b66;
     color: #fff;
 }
 
-.cube-viewport .mind-map-section {
-    flex: 1;
+.dashboard-content {
+    min-height: 200px;
+}
+
+.dashboard-list-detail .list-item,
+.dashboard-panel .list-item,
+.dashboard-list-detail .sentence-item {
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+.mind-map-section {
     min-height: 200px;
     display: flex;
     flex-direction: column;
@@ -228,7 +99,7 @@ body {
     overflow: hidden;
 }
 
-.cube-viewport .mind-map-section #mindMap {
+.mind-map-section #mindMap {
     flex: 1;
     min-height: 180px;
     max-width: 100%;
@@ -236,20 +107,6 @@ body {
 }
 
 @media (max-width: 768px) {
-    .cube-app-wrap {
-        height: calc(100vh - 70px);
-        min-height: 320px;
-    }
-
-    .cube-viewport {
-        height: 100%;
-        min-height: 320px;
-    }
-
-    .cube-dots {
-        bottom: max(12px, env(safe-area-inset-bottom));
-    }
-
     body {
         padding-bottom: env(safe-area-inset-bottom);
     }
@@ -265,21 +122,9 @@ body {
         gap: 12px;
     }
 
-    .grid.mobile-list-selected .dashboard-lists-panel {
-        display: none;
-    }
-
     .show-lists-btn {
         display: inline-block;
         margin-bottom: 10px;
-    }
-
-    .show-lists-btn-header {
-        display: block;
-    }
-
-    .grid.mobile-list-selected .dashboard-content-title {
-        display: none;
     }
 
     .list-item-main {
@@ -494,19 +339,6 @@ li {
 .show-lists-btn {
     display: inline-block;
     margin-bottom: 10px;
-}
-
-.show-lists-btn-header {
-    display: none;
-    width: 100%;
-    text-align: left;
-    font-size: 1.1rem;
-    font-weight: 600;
-    padding: 12px 16px;
-    margin-bottom: 12px;
-    border: 1px solid #dbe1eb;
-    background: #e8eef7;
-    color: #1f3b66;
 }
 
 .list-item {
