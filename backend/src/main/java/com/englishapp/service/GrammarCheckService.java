@@ -10,6 +10,7 @@ import java.util.stream.Collectors;
 
 /**
  * Lightweight local grammar check using LanguageTool (rule-based, runs in-process, no API key).
+ * Normalizes input for case-insensitive checking and ignores apostrophe variants (curly/straight).
  */
 @Service
 public class GrammarCheckService {
@@ -26,14 +27,29 @@ public class GrammarCheckService {
         return true;
     }
 
+    /**
+     * Normalize text so spell/grammar check ignores case and apostrophe style:
+     * lowercase, and replace curly/smart apostrophes and backticks with straight apostrophe.
+     */
+    private static String normalizeForCheck(String text) {
+        if (text == null) return "";
+        String normalized = text
+                .replace('\u2019', '\'')   // right single quotation mark (curly apostrophe)
+                .replace('\u2018', '\'')   // left single quotation mark
+                .replace('`', '\'');
+        return normalized.toLowerCase();
+    }
+
     public GrammarCheckResult check(String text) {
         if (text == null || text.isBlank()) {
             return new GrammarCheckResult(false, "No text provided.");
         }
 
+        String normalized = normalizeForCheck(text);
+
         synchronized (langTool) {
             try {
-                List<RuleMatch> matches = langTool.check(text);
+                List<RuleMatch> matches = langTool.check(normalized);
                 if (matches.isEmpty()) {
                     return new GrammarCheckResult(true, "Looks good! No grammar or spelling issues found.");
                 }

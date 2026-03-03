@@ -44,7 +44,15 @@ public class ListSentenceController {
     }
 
     @GetMapping("/lists/{listId}/sentences")
-    public List<Map<String, Object>> getSentences(@PathVariable Long listId) {
+    public Object getSentences(
+            @PathVariable Long listId,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size
+    ) {
+        if (page != null && size != null) {
+            return listSentenceService.getSentencesPaginated(
+                    currentUserService.getCurrentUserId(), listId, page, size);
+        }
         return listSentenceService.getSentences(currentUserService.getCurrentUserId(), listId);
     }
 

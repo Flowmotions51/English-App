@@ -5,6 +5,8 @@ import com.englishapp.model.SentenceList;
 import com.englishapp.model.UserAccount;
 import com.englishapp.repository.SentenceListRepository;
 import com.englishapp.repository.SentenceRepository;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -66,6 +68,18 @@ public class ListSentenceService {
         return sentenceRepository.findByListAndUser(listId, userId).stream()
                 .map(this::sentencePayload)
                 .toList();
+    }
+
+    public Map<String, Object> getSentencesPaginated(Long userId, Long listId, int page, int size) {
+        getListByUser(listId, userId);
+        int safeSize = Math.min(Math.max(1, size), 100);
+        Pageable pageable = PageRequest.of(page, safeSize);
+        var sentencePage = sentenceRepository.findByListAndUser(listId, userId, pageable);
+        List<Map<String, Object>> content = sentencePage.getContent().stream()
+                .map(this::sentencePayload)
+                .toList();
+        boolean hasMore = sentencePage.getNumber() < sentencePage.getTotalPages() - 1;
+        return Map.<String, Object>of("content", content, "hasMore", hasMore);
     }
 
     @Transactional

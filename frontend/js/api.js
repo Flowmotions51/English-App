@@ -35,6 +35,8 @@ export const api = {
     deleteList: (id) => request(`/lists/${id}`, { method: "DELETE" }),
 
     getSentences: (listId) => request(`/lists/${listId}/sentences`),
+    getSentencesPage: (listId, page, size = 20) =>
+        request(`/lists/${listId}/sentences?page=${page}&size=${size}`),
     addSentence: (listId, payload) => request(`/lists/${listId}/sentences`, { method: "POST", body: JSON.stringify(payload) }),
     editSentence: (id, payload) => request(`/sentences/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
     deleteSentence: (id) => request(`/sentences/${id}`, { method: "DELETE" }),

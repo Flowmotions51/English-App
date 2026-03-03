@@ -21,7 +21,19 @@ const state = {
     mindMapLastPositions: null,
     draggingNodeId: null,
     mindMapJustDragged: false,
-    currentSection: 0
+    currentSection: 0,
+    listSearchQuery: "",
+    sentencesPage: 0,
+    sentencesHasMore: false,
+    sentencesLoading: false,
+    savedListScrollY: 0,
+    mindMapScale: 1,
+    mindMapPan: { x: 0, y: 0 },
+    mindMapUserPan: { x: 0, y: 0 },
+    mindMapPanning: false,
+    mindMapFullscreenParent: null,
+    openedListFromMindMap: false,
+    restoreMindMapFullscreen: false
 };
 
 const appEl = document.getElementById("app");
@@ -160,15 +172,19 @@ async function bootstrap() {
 
 async function loadAppData() {
     state.lists = await api.getLists();
-    if (state.selectedListId === null && state.lists.length > 0) {
-        state.selectedListId = state.lists[0].id;
-    }
     state.pendingSessions = await api.getPendingReviews();
     state.settings = await api.getSettings();
     if (state.selectedListId) {
-        state.sentences = await api.getSentences(state.selectedListId);
+        const data = await api.getSentencesPage(state.selectedListId, 0, 20);
+        state.sentences = data.content || [];
+        state.sentencesPage = 0;
+        state.sentencesHasMore = data.hasMore === true;
+        state.sentencesLoading = false;
     } else {
         state.sentences = [];
+        state.sentencesPage = 0;
+        state.sentencesHasMore = false;
+        state.sentencesLoading = false;
     }
 }
 
@@ -263,10 +279,79 @@ async function sentenceGrammar(id) {
 }
 
 let sentenceActionPopupEl = null;
+let listActionPopupEl = null;
 
 function closeSentenceActionPopup() {
     if (sentenceActionPopupEl) {
         sentenceActionPopupEl.classList.remove("is-open");
+    }
+}
+
+function closeListActionPopup() {
+    if (listActionPopupEl) listActionPopupEl.classList.remove("is-open");
+}
+
+function showListActionPopup(action, listId, listName) {
+    if (!listActionPopupEl) {
+        listActionPopupEl = document.createElement("div");
+        listActionPopupEl.className = "sentence-action-popup-backdrop list-action-popup-backdrop";
+        listActionPopupEl.innerHTML = '<div class="sentence-action-popup list-action-popup"></div>';
+        listActionPopupEl.querySelector(".sentence-action-popup").style.left = "50%";
+        listActionPopupEl.querySelector(".sentence-action-popup").style.top = "50%";
+        listActionPopupEl.querySelector(".sentence-action-popup").style.transform = "translate(-50%, -50%)";
+        listActionPopupEl.addEventListener("click", (e) => {
+            if (e.target === listActionPopupEl) closeListActionPopup();
+        });
+        document.body.appendChild(listActionPopupEl);
+    }
+
+    const popup = listActionPopupEl.querySelector(".sentence-action-popup");
+    const safeName = escapeHtml(listName || "");
+
+    if (action === "rename") {
+        popup.innerHTML = `
+            <h4>Rename list</h4>
+            <input type="text" id="listRenameInput" value="${safeName}" placeholder="List name" />
+            <div class="popup-actions">
+                <button type="button" class="popup-cancel secondary">Cancel</button>
+                <button type="button" class="popup-save list-rename-save">Save</button>
+            </div>
+        `;
+        popup.querySelector(".popup-cancel").addEventListener("click", closeListActionPopup);
+        popup.querySelector(".list-rename-save").addEventListener("click", async () => {
+            const name = popup.querySelector("#listRenameInput").value.trim();
+            if (!name) return;
+            await api.renameList(listId, { name });
+            closeListActionPopup();
+            await refreshAndRender();
+        });
+    } else if (action === "delete") {
+        popup.innerHTML = `
+            <h4>Delete list</h4>
+            <p class="list-delete-message">Are you sure you want to delete "${safeName}"? All sentences in this list will be removed.</p>
+            <div class="popup-actions">
+                <button type="button" class="popup-cancel secondary">Cancel</button>
+                <button type="button" class="popup-confirm danger">Delete</button>
+            </div>
+        `;
+        popup.querySelector(".popup-cancel").addEventListener("click", closeListActionPopup);
+        popup.querySelector(".popup-confirm").addEventListener("click", async () => {
+            await api.deleteList(listId);
+            if (state.selectedListId === listId) {
+                state.selectedListId = null;
+            }
+            closeListActionPopup();
+            await refreshAndRender();
+        });
+    }
+
+    listActionPopupEl.classList.add("is-open");
+    if (action === "rename") {
+        const input = popup.querySelector("#listRenameInput");
+        if (input) {
+            input.focus();
+            input.select();
+        }
     }
 }
 
@@ -440,25 +525,33 @@ function renderApp() {
 
     appEl.innerHTML = html`
       <section class="dashboard container">
+        ${!state.selectedListId ? html`
         <div class="dashboard-tabs" role="tablist">
           <button type="button" class="dashboard-tab ${state.currentSection === 0 ? "active" : ""}" data-section="0" role="tab">Lists</button>
           <button type="button" class="dashboard-tab ${state.currentSection === 1 ? "active" : ""}" data-section="1" role="tab">Reviews</button>
           <button type="button" class="dashboard-tab ${state.currentSection === 2 ? "active" : ""}" data-section="2" role="tab">Settings</button>
           <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
         </div>
+        ` : ""}
         <div class="dashboard-content">
           ${state.selectedListId ? html`
             <div class="dashboard-list-detail card">
-              <button type="button" id="showListsBtn" class="show-lists-btn secondary">← Lists</button>
+              <button type="button" id="showListsBtn" class="show-lists-btn secondary">${state.openedListFromMindMap ? "← Mind Map" : "← Lists"}</button>
               <h2 class="dashboard-content-title">${selectedList ? escapeHtml(selectedList.name) : ""}</h2>
               ${selectedList ? html`
                 <div class="row">
                   <input id="newSentence" placeholder="Add sentence to memorize" />
                   <button id="addSentenceBtn">Add sentence</button>
                 </div>
+                <div class="row list-search-row">
+                  <input id="listSearchInput" type="search" placeholder="Search in list…" value="${escapeHtml(state.listSearchQuery || "")}" autocomplete="off" />
+                </div>
                 <div class="hint">New sentences are auto-scheduled by default pattern (1h, 3h, 6h, 1d, 2d, 1w).</div>
                 <ul class="sentence-list">
-                  ${state.sentences.map((sentence) => html`
+                  ${(() => {
+                    const q = (state.listSearchQuery || "").trim().toLowerCase();
+                    const filtered = q ? state.sentences.filter((s) => (s.content || "").toLowerCase().includes(q)) : state.sentences;
+                    return filtered.map((sentence) => html`
                     <li class="sentence-item ${state.selectedSentenceId === sentence.id ? "selected" : ""}" data-sentence-id="${sentence.id}">
                       <div class="sentence-item-content" data-sentence-select="${sentence.id}">${renderSentenceWithWordLinks(sentence.content)}</div>
                       <div class="hint">${new Date(sentence.createdAt).toLocaleString()}</div>
@@ -472,8 +565,10 @@ function renderApp() {
                         <button type="button" data-sentence-delete="${sentence.id}" class="btn-icon danger" title="Delete">🗑️</button>
                       </div>
                     </li>
-                  `).join("")}
+                  `).join("");
+                  })()}
                 </ul>
+                <div id="sentenceListSentinel" class="sentence-list-sentinel" aria-hidden="true"></div>
               ` : ""}
             </div>
           ` : html`
@@ -517,8 +612,16 @@ function renderApp() {
             </div>
             <div class="dashboard-panel card mind-map-section" data-section="3" style="display: ${state.currentSection === 3 ? "block" : "none"}">
               <h3>Mind Map (all lists)</h3>
-              <p class="hint">Circles from the same list are connected. Drag to move.</p>
-              <canvas id="mindMap" width="900" height="480"></canvas>
+              <p class="hint">Circles from the same list are connected. Click a circle to open that list. Drag to move. Scroll to zoom.</p>
+              <div class="mind-map-zoom-wrap">
+                <div class="mind-map-zoom-controls">
+                  <button type="button" id="mindMapZoomOut" class="btn-icon secondary" title="Zoom out">−</button>
+                  <span class="mind-map-zoom-label" id="mindMapZoomLabel">100%</span>
+                  <button type="button" id="mindMapZoomIn" class="btn-icon secondary" title="Zoom in">+</button>
+                  <button type="button" id="mindMapFullscreen" class="btn-icon secondary" title="Full screen">⛶</button>
+                </div>
+                <canvas id="mindMap" width="900" height="480"></canvas>
+              </div>
             </div>
           `}
         </div>
@@ -529,6 +632,13 @@ function renderApp() {
     bindDashboardTabs();
     renderPendingReviews();
     renderMindMap();
+
+    if (state.savedListScrollY) {
+        setTimeout(() => {
+            window.scrollTo(0, state.savedListScrollY);
+            state.savedListScrollY = 0;
+        }, 0);
+    }
 }
 
 function bindDashboardTabs() {
@@ -553,7 +663,29 @@ function bindDashboardTabs() {
     if (showListsBtn) {
         showListsBtn.addEventListener("click", () => {
             state.selectedListId = null;
+            state.listSearchQuery = "";
+            const wasFromMindMap = state.openedListFromMindMap;
+            const wasRestoreFullscreen = state.restoreMindMapFullscreen;
+            state.restoreMindMapFullscreen = false;
+            state.openedListFromMindMap = false;
+            state.currentSection = wasFromMindMap ? 3 : 0;
             renderApp();
+            if (wasRestoreFullscreen) {
+                setTimeout(() => openMindMapFullscreen(), 100);
+            }
+        });
+    }
+
+    const listSearchInput = document.getElementById("listSearchInput");
+    if (listSearchInput) {
+        listSearchInput.addEventListener("input", () => {
+            state.listSearchQuery = listSearchInput.value;
+            const q = state.listSearchQuery.trim().toLowerCase();
+            document.querySelectorAll(".dashboard-list-detail .sentence-list .sentence-item").forEach((li) => {
+                const contentEl = li.querySelector(".sentence-item-content");
+                const text = (contentEl ? contentEl.textContent : "").toLowerCase();
+                li.style.display = q === "" || text.includes(q) ? "" : "none";
+            });
         });
     }
 }
@@ -605,6 +737,8 @@ function renderReviewSessionPage() {
             state.view = "dashboard";
             state.openSessionId = null;
             state.openSession = null;
+            state.selectedListId = null;
+            state.currentSection = 1;
             await refreshAndRender();
         } catch (error) {
             notify(error.message);
@@ -635,8 +769,10 @@ function renderReviewSessionPage() {
 
 function normalizeForComparison(text) {
     const t = (text || "").trim().toLowerCase().replace(/\s+/g, " ");
-    // Strip punctuation (include curly/smart apostrophe \u2019 and quotes so "don't" matches "don't")
-    return t.replace(/[\s.,?!;:'"\u2018\u2019\u201c\u201d\-—–()\[\]{}]+/g, " ").replace(/\s+/g, " ").trim();
+    // Remove apostrophes first so "friend's" and "friends'" both become "friends", "don't" becomes "dont"
+    const noApostrophe = t.replace(/['\u2018\u2019`]/g, "");
+    // Then strip remaining punctuation and collapse spaces
+    return noApostrophe.replace(/[\s.,?!;:"\u201c\u201d\-—–()\[\]{}]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function runVoiceCheck(expectedContent, resultEl, buttonEl) {
@@ -824,6 +960,8 @@ function bindDashboardActions() {
 
     document.querySelectorAll("[data-list-open]").forEach((button) => {
         button.addEventListener("click", async () => {
+            state.openedListFromMindMap = false;
+            state.restoreMindMapFullscreen = false;
             state.selectedListId = Number(button.getAttribute("data-list-open"));
             await refreshAndRender();
         });
@@ -833,6 +971,8 @@ function bindDashboardActions() {
             const li = el.closest(".list-item");
             const listId = li ? Number(li.getAttribute("data-list-id")) : null;
             if (listId == null) return;
+            state.openedListFromMindMap = false;
+            state.restoreMindMapFullscreen = false;
             state.selectedListId = listId;
             await refreshAndRender();
         });
@@ -844,23 +984,17 @@ function bindDashboardActions() {
         });
     });
     document.querySelectorAll("[data-list-rename]").forEach((button) => {
-        button.addEventListener("click", async () => {
+        button.addEventListener("click", () => {
             const listId = Number(button.getAttribute("data-list-rename"));
-            const name = window.prompt("New list name:");
-            if (!name) return;
-            await api.renameList(listId, { name });
-            await refreshAndRender();
+            const list = state.lists.find((l) => l.id === listId);
+            showListActionPopup("rename", listId, list ? list.name : "");
         });
     });
     document.querySelectorAll("[data-list-delete]").forEach((button) => {
-        button.addEventListener("click", async () => {
+        button.addEventListener("click", () => {
             const listId = Number(button.getAttribute("data-list-delete"));
-            if (!window.confirm("Delete this list?")) return;
-            await api.deleteList(listId);
-            if (state.selectedListId === listId) {
-                state.selectedListId = null;
-            }
-            await refreshAndRender();
+            const list = state.lists.find((l) => l.id === listId);
+            showListActionPopup("delete", listId, list ? list.name : "");
         });
     });
 
@@ -924,6 +1058,40 @@ function bindDashboardActions() {
             await refreshAndRender();
         });
     }
+
+    const sentinel = document.getElementById("sentenceListSentinel");
+    if (sentinel && typeof IntersectionObserver !== "undefined") {
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (!entries[0]?.isIntersecting) return;
+                loadMoreSentences();
+            },
+            { root: null, rootMargin: "200px", threshold: 0 }
+        );
+        observer.observe(sentinel);
+    }
+}
+
+async function loadMoreSentences() {
+    if (state.sentencesLoading || !state.sentencesHasMore || !state.selectedListId) return;
+    state.savedListScrollY = window.scrollY;
+    state.sentencesLoading = true;
+    try {
+        const data = await api.getSentencesPage(state.selectedListId, state.sentencesPage + 1, 20);
+        const newItems = data.content || [];
+        state.sentences = [...state.sentences, ...newItems];
+        state.sentencesPage++;
+        state.sentencesHasMore = data.hasMore === true;
+        renderApp();
+        setTimeout(() => {
+            window.scrollTo(0, state.savedListScrollY);
+            state.savedListScrollY = 0;
+            state.sentencesLoading = false;
+        }, 0);
+    } catch (e) {
+        state.sentencesLoading = false;
+        notify(e.message || "Failed to load more.");
+    }
 }
 
 async function refreshAndRender() {
@@ -954,13 +1122,13 @@ function getCircleRadius(node) {
 function getMindMapNodePositions(nodes, width, height) {
     const w = width || MIND_MAP_CANVAS_WIDTH;
     const h = height || MIND_MAP_CANVAS_HEIGHT;
-    const scale = Math.min(w / MIND_MAP_CANVAS_WIDTH, h / MIND_MAP_CANVAS_HEIGHT, 1.2);
+    const viewScale = Math.min(w / MIND_MAP_CANVAS_WIDTH, h / MIND_MAP_CANVAS_HEIGHT, 1.2);
     const positions = state.mindMapPositions || {};
     const centerX = w / 2;
     const centerY = h / 2;
-    const clusterDist = MIND_MAP_CLUSTER_DIST * scale;
-    const inListR = MIND_MAP_IN_LIST_RADIUS * scale;
-    const inListStep = MIND_MAP_IN_LIST_STEP * scale;
+
+    const maxRadius = nodes.length === 0 ? MIND_MAP_BASE_RADIUS : Math.max(...nodes.map((n) => getCircleRadius(n)));
+    const minDist = maxRadius * 2.4;
 
     const byList = new Map();
     const listOrder = [];
@@ -974,8 +1142,18 @@ function getMindMapNodePositions(nodes, width, height) {
     }
 
     const numLists = Math.max(1, listOrder.length);
+    const listClusterRadii = listOrder.map((lid) => {
+        const listNodes = byList.get(lid);
+        const n = listNodes.length;
+        const maxR = Math.max(...listNodes.map((n) => getCircleRadius(n)));
+        const circumference = n * minDist;
+        const r = Math.max(maxR * 2, circumference / (2 * Math.PI));
+        return r;
+    });
+    const maxListR = Math.max(80, ...listClusterRadii);
+    const clusterDist = Math.max(160 * viewScale, 2 * maxListR + maxRadius * 2);
 
-    return nodes.map((node) => {
+    const result = nodes.map((node) => {
         const saved = positions[node.id];
         if (saved) return { node, x: saved.x, y: saved.y };
 
@@ -995,12 +1173,44 @@ function getMindMapNodePositions(nodes, width, height) {
         const lcx = centerX + clusterDist * Math.cos(listAngle);
         const lcy = centerY + clusterDist * Math.sin(listAngle);
 
-        const nodeAngle = nodeIdxInList * MIND_MAP_IN_LIST_ANGLE;
-        const nodeR = inListR + nodeIdxInList * inListStep;
-        const x = lcx + nodeR * Math.cos(nodeAngle);
-        const y = lcy + nodeR * Math.sin(nodeAngle);
+        const listR = listClusterRadii[listIdx];
+        const nInList = listNodes.length;
+        const angleStep = nInList <= 1 ? 0 : (2 * Math.PI) / nInList;
+        const nodeAngle = listAngle + Math.PI / 2 + nodeIdxInList * angleStep;
+        const x = lcx + listR * Math.cos(nodeAngle);
+        const y = lcy + listR * Math.sin(nodeAngle);
         return { node, x, y };
     });
+
+    const overlapIterations = 12;
+    for (let iter = 0; iter < overlapIterations; iter++) {
+        let moved = false;
+        for (let i = 0; i < result.length; i++) {
+            const ri = result[i];
+            const radiusI = getCircleRadius(ri.node);
+            for (let j = i + 1; j < result.length; j++) {
+                const rj = result[j];
+                const radiusJ = getCircleRadius(rj.node);
+                const dx = rj.x - ri.x;
+                const dy = rj.y - ri.y;
+                const dist = Math.hypot(dx, dy);
+                const need = radiusI + radiusJ + 4;
+                if (dist < need && dist > 0.01) {
+                    const push = (need - dist) / 2;
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    ri.x -= nx * push;
+                    ri.y -= ny * push;
+                    rj.x += nx * push;
+                    rj.y += ny * push;
+                    moved = true;
+                }
+            }
+        }
+        if (!moved) break;
+    }
+
+    return result;
 }
 
 function wrapLabelInCircle(ctx, label, maxWidth, maxLines = 4) {
@@ -1060,10 +1270,19 @@ function redrawMindMapCanvas() {
     canvas.width = cw;
     canvas.height = ch;
 
+    const scale = state.mindMapScale;
+    const basePan = { x: cw / 2 * (1 - scale), y: ch / 2 * (1 - scale) };
+    state.mindMapPan = {
+        x: basePan.x + (state.mindMapUserPan?.x ?? 0),
+        y: basePan.y + (state.mindMapUserPan?.y ?? 0)
+    };
+
     const positions = getMindMapNodePositions(nodes, canvas.width, canvas.height);
     state.mindMapLastPositions = positions;
 
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(scale, 0, 0, scale, state.mindMapPan.x, state.mindMapPan.y);
 
     const byListId = new Map();
     positions.forEach(({ node, x, y }) => {
@@ -1122,9 +1341,13 @@ function canvasCoords(canvas, clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
+    const bufX = (clientX - rect.left) * scaleX;
+    const bufY = (clientY - rect.top) * scaleY;
+    const scale = state.mindMapScale;
+    const pan = state.mindMapPan;
     return {
-        x: (clientX - rect.left) * scaleX,
-        y: (clientY - rect.top) * scaleY
+        x: (bufX - pan.x) / scale,
+        y: (bufY - pan.y) / scale
     };
 }
 
@@ -1138,6 +1361,33 @@ function hitTestNode(mx, my) {
         if (dx * dx + dy * dy <= radius * radius) return node;
     }
     return null;
+}
+
+function closeMindMapFullscreen() {
+    const overlay = document.getElementById("mindMapFullscreenOverlay");
+    if (!overlay || !state.mindMapFullscreenParent) return;
+    const wrap = overlay.querySelector(".mind-map-zoom-wrap");
+    if (wrap) state.mindMapFullscreenParent.appendChild(wrap);
+    overlay.remove();
+    state.mindMapFullscreenParent = null;
+    if (wrap) setTimeout(() => redrawMindMapCanvas(), 50);
+}
+
+function openMindMapFullscreen() {
+    const wrap = document.querySelector(".mind-map-zoom-wrap");
+    if (!wrap || state.mindMapFullscreenParent) return;
+    const overlay = document.createElement("div");
+    overlay.id = "mindMapFullscreenOverlay";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "mind-map-fullscreen-close btn secondary";
+    closeBtn.textContent = "Close full screen";
+    closeBtn.addEventListener("click", closeMindMapFullscreen);
+    overlay.appendChild(closeBtn);
+    state.mindMapFullscreenParent = wrap.parentNode;
+    overlay.appendChild(wrap);
+    document.body.appendChild(overlay);
+    setTimeout(() => redrawMindMapCanvas(), 50);
 }
 
 async function renderMindMap() {
@@ -1194,11 +1444,12 @@ async function renderMindMap() {
         const upHandler = (e2) => {
             if ((e2.type === "touchend" || e2.type === "touchcancel") && didMove) state.mindMapJustDragged = true;
             if ((e2.type === "touchend" || e2.type === "touchcancel") && !didMove) {
-                state.selectedSentenceId = state.selectedSentenceId === node.id ? null : node.id;
-                redrawMindMapCanvas();
-                document.querySelectorAll(".sentence-item").forEach((li) => {
-                    li.classList.toggle("selected", Number(li.getAttribute("data-sentence-id")) === state.selectedSentenceId);
-                });
+                state.selectedListId = node.listId != null ? node.listId : state.selectedListId;
+                state.selectedSentenceId = node.id;
+                state.openedListFromMindMap = true;
+                state.restoreMindMapFullscreen = !!state.mindMapFullscreenParent;
+                closeMindMapFullscreen();
+                refreshAndRender();
             }
             state.draggingNodeId = null;
             document.removeEventListener("mousemove", moveHandler);
@@ -1222,11 +1473,52 @@ async function renderMindMap() {
         document.addEventListener("touchcancel", touchEndHandler);
     }
 
+    function startMapPan(clientX, clientY) {
+        state.mindMapPanning = true;
+        const startClientX = clientX;
+        const startClientY = clientY;
+        const startUserPan = { x: state.mindMapUserPan.x, y: state.mindMapUserPan.y };
+
+        const moveHandler = (e2) => {
+            const cx = e2.clientX != null ? e2.clientX : (e2.touches && e2.touches[0] ? e2.touches[0].clientX : startClientX);
+            const cy = e2.clientY != null ? e2.clientY : (e2.touches && e2.touches[0] ? e2.touches[0].clientY : startClientY);
+            state.mindMapUserPan = {
+                x: startUserPan.x + (cx - startClientX),
+                y: startUserPan.y + (cy - startClientY)
+            };
+            redrawMindMapCanvas();
+        };
+        const upHandler = () => {
+            state.mindMapPanning = false;
+            document.removeEventListener("mousemove", moveHandler);
+            document.removeEventListener("mouseup", upHandler);
+            document.removeEventListener("touchmove", touchMoveHandler, { passive: false });
+            document.removeEventListener("touchend", touchEndHandler);
+            document.removeEventListener("touchcancel", touchEndHandler);
+            canvas.style.cursor = "grab";
+        };
+        const touchMoveHandler = (e2) => {
+            e2.preventDefault();
+            moveHandler(e2);
+        };
+        const touchEndHandler = upHandler;
+
+        document.addEventListener("mousemove", moveHandler);
+        document.addEventListener("mouseup", upHandler);
+        document.addEventListener("touchmove", touchMoveHandler, { passive: false });
+        document.addEventListener("touchend", touchEndHandler);
+        document.addEventListener("touchcancel", touchEndHandler);
+        canvas.style.cursor = "grabbing";
+    }
+
     canvas.addEventListener("mousedown", (e) => {
         const { x, y } = canvasCoords(canvas, e.clientX, e.clientY);
         const node = hitTestNode(x, y);
-        if (!node) return;
-        startDrag(node, e.clientX, e.clientY);
+        if (node) {
+            startDrag(node, e.clientX, e.clientY);
+        } else {
+            startMapPan(e.clientX, e.clientY);
+        }
     });
 
     canvas.addEventListener("touchstart", (e) => {
@@ -1235,8 +1527,11 @@ async function renderMindMap() {
         const touch = e.touches[0];
         const { x, y } = canvasCoords(canvas, touch.clientX, touch.clientY);
         const node = hitTestNode(x, y);
-        if (!node) return;
-        startDrag(node, touch.clientX, touch.clientY);
+        if (node) {
+            startDrag(node, touch.clientX, touch.clientY);
+        } else {
+            startMapPan(touch.clientX, touch.clientY);
+        }
     }, { passive: false });
 
     canvas.addEventListener("click", (e) => {
@@ -1248,14 +1543,48 @@ async function renderMindMap() {
         const { x, y } = canvasCoords(canvas, e.clientX, e.clientY);
         const node = hitTestNode(x, y);
         if (!node) return;
-        state.selectedSentenceId = state.selectedSentenceId === node.id ? null : node.id;
-        redrawMindMapCanvas();
-        document.querySelectorAll(".sentence-item").forEach((li) => {
-            li.classList.toggle("selected", Number(li.getAttribute("data-sentence-id")) === state.selectedSentenceId);
-        });
+        state.selectedListId = node.listId != null ? node.listId : state.selectedListId;
+        state.selectedSentenceId = node.id;
+        state.openedListFromMindMap = true;
+        state.restoreMindMapFullscreen = !!state.mindMapFullscreenParent;
+        closeMindMapFullscreen();
+        refreshAndRender();
     });
 
-    canvas.style.cursor = "pointer";
+    canvas.style.cursor = "grab";
+
+    canvas.addEventListener("mousemove", (e) => {
+        if (state.draggingNodeId != null || state.mindMapPanning) return;
+        const { x, y } = canvasCoords(canvas, e.clientX, e.clientY);
+        const node = hitTestNode(x, y);
+        canvas.style.cursor = node ? "pointer" : "grab";
+    });
+
+    function setZoom(newScale) {
+        state.mindMapScale = Math.max(0.25, Math.min(4, newScale));
+        const label = document.getElementById("mindMapZoomLabel");
+        if (label) label.textContent = Math.round(state.mindMapScale * 100) + "%";
+        redrawMindMapCanvas();
+    }
+
+    canvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.12 : 0.12;
+        setZoom(state.mindMapScale + delta);
+    }, { passive: false });
+
+    const zoomInBtn = document.getElementById("mindMapZoomIn");
+    const zoomOutBtn = document.getElementById("mindMapZoomOut");
+    if (zoomInBtn) zoomInBtn.addEventListener("click", () => setZoom(state.mindMapScale + 0.25));
+    if (zoomOutBtn) zoomOutBtn.addEventListener("click", () => setZoom(state.mindMapScale - 0.25));
+
+    const fullscreenBtn = document.getElementById("mindMapFullscreen");
+    if (fullscreenBtn) {
+        fullscreenBtn.addEventListener("click", openMindMapFullscreen);
+    }
+
+    const label = document.getElementById("mindMapZoomLabel");
+    if (label) label.textContent = Math.round(state.mindMapScale * 100) + "%";
 }
 
 bootstrap();
