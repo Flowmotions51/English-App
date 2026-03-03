@@ -263,6 +263,28 @@ function showGrammarResultPopup(correct, feedback, loading = false) {
     grammarPopupEl.classList.add("is-open");
 }
 
+function openPlayphrasePopup(sentenceContent) {
+    const text = (sentenceContent || "").trim();
+    if (!text) {
+        notify("No sentence text.");
+        return;
+    }
+    const q = encodeURIComponent(text);
+    const url = `https://www.playphrase.me/#/search?q=${q}&language=en`;
+    window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function openYouglish(sentenceContent) {
+    const text = (sentenceContent || "").trim();
+    if (!text) {
+        notify("No sentence text.");
+        return;
+    }
+    const segment = text.replace(/\s+/g, "_");
+    const url = `https://youglish.com/pronounce/${encodeURIComponent(segment)}/english`;
+    window.open(url, "_blank", "noopener,noreferrer");
+}
+
 async function sentenceGrammar(id) {
     const sentence = state.sentences.find((s) => s.id === id);
     if (!sentence || !sentence.content) {
@@ -557,6 +579,8 @@ function renderApp() {
                       <div class="hint">${new Date(sentence.createdAt).toLocaleString()}</div>
                       <div class="row sentence-actions">
                         <button type="button" data-sentence-speak="${sentence.id}" class="btn-icon secondary" title="Listen">🔊</button>
+                        <button type="button" data-sentence-playphrase="${sentence.id}" class="btn-icon secondary" title="Play phrase (playphrase.me)">▶️</button>
+                        <button type="button" data-sentence-youglish="${sentence.id}" class="btn-icon secondary" title="Pronounce (YouGlish)">🔤</button>
                         <button type="button" data-sentence-test-review="${sentence.id}" class="btn-icon secondary" title="Test review">📋</button>
                         <button type="button" data-sentence-grammar="${sentence.id}" class="btn-icon secondary" title="Check grammar">✓</button>
                         <button type="button" data-sentence-edit="${sentence.id}" class="btn-icon secondary" title="Edit">✏️</button>
@@ -1010,6 +1034,22 @@ function bindDashboardActions() {
 
     document.querySelectorAll("[data-sentence-speak]").forEach((button) => {
         button.addEventListener("click", () => sentenceSpeak(Number(button.getAttribute("data-sentence-speak"))));
+    });
+
+    document.querySelectorAll("[data-sentence-playphrase]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const sentenceId = Number(button.getAttribute("data-sentence-playphrase"));
+            const sentence = state.sentences.find((s) => s.id === sentenceId);
+            openPlayphrasePopup(sentence ? sentence.content : "");
+        });
+    });
+
+    document.querySelectorAll("[data-sentence-youglish]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const sentenceId = Number(button.getAttribute("data-sentence-youglish"));
+            const sentence = state.sentences.find((s) => s.id === sentenceId);
+            openYouglish(sentence ? sentence.content : "");
+        });
     });
 
     document.querySelectorAll("[data-sentence-grammar]").forEach((button) => {
