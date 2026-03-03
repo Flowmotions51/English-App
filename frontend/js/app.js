@@ -820,7 +820,18 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl) {
     recognition.continuous = false;
     recognition.interimResults = false;
 
+    function releaseMic() {
+        try {
+            recognition.stop();
+        } catch (_) {
+            try {
+                recognition.abort();
+            } catch (_) {}
+        }
+    }
+
     recognition.onresult = (event) => {
+        releaseMic();
         const transcript = (event.results[0] && event.results[0][0]) ? event.results[0][0].transcript : "";
         const said = normalizeForComparison(transcript);
         const match = expected === said;
@@ -835,6 +846,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl) {
     };
 
     recognition.onerror = (event) => {
+        releaseMic();
         resultEl.className = "review-voice-result review-voice-mismatch";
         const msg = event.error === "no-speech" ? "No speech heard. Try again." : (event.error === "not-allowed" ? "Microphone access denied." : `Error: ${event.error}`);
         resultEl.textContent = msg;
@@ -843,6 +855,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl) {
 
     recognition.onend = () => {
         if (resultEl.classList.contains("review-voice-listening")) {
+            releaseMic();
             resultEl.className = "review-voice-result review-voice-mismatch";
             resultEl.textContent = "Recognition ended. Click 🎤 to try again.";
             buttonEl.disabled = false;
