@@ -4,6 +4,7 @@ import com.englishapp.model.ScheduleTemplate;
 import com.englishapp.model.Sentence;
 import com.englishapp.model.SentenceScheduleStep;
 import com.englishapp.repository.ScheduleTemplateRepository;
+import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,9 +20,11 @@ public class ScheduleService {
     public static final List<Integer> DEFAULT_STEPS_MINUTES = List.of(60, 180, 360, 1440, 2880, 10080);
 
     private final ScheduleTemplateRepository scheduleTemplateRepository;
+    private final EntityManager entityManager;
 
-    public ScheduleService(ScheduleTemplateRepository scheduleTemplateRepository) {
+    public ScheduleService(ScheduleTemplateRepository scheduleTemplateRepository, EntityManager entityManager) {
         this.scheduleTemplateRepository = scheduleTemplateRepository;
+        this.entityManager = entityManager;
     }
 
     @Transactional
@@ -67,6 +70,7 @@ public class ScheduleService {
                 });
 
         template.getSteps().clear();
+        entityManager.flush(); // Run orphan-removal DELETEs before inserting new steps (avoids unique constraint)
         for (int i = 0; i < intervals.size(); i++) {
             Integer interval = intervals.get(i);
             if (interval == null || interval <= 0) {
