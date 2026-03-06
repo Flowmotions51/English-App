@@ -33,7 +33,20 @@ const state = {
     mindMapPanning: false,
     mindMapFullscreenParent: null,
     openedListFromMindMap: false,
-    restoreMindMapFullscreen: false
+    restoreMindMapFullscreen: false,
+    mindMapCenterListId: null,
+    mindMapPanVelocity: { vx: 0, vy: 0 },
+    mindMapPanBounds: null,
+    mindMapInertialAnimating: false,
+    mindMapLastPanTime: 0,
+    mindMapLastDisplayPan: null,
+    newListId: null,
+    newSentenceId: null,
+    justOpenedListId: null,
+    mindMapInertialRAF: null,
+    mindMapSnapBackAnimating: false,
+    mindMapSnapBackRAF: null,
+    mindMapSnapBackData: null
 };
 
 const appEl = document.getElementById("app");
@@ -310,7 +323,9 @@ function closeSentenceActionPopup() {
 }
 
 function closeListActionPopup() {
-    if (listActionPopupEl) listActionPopupEl.classList.remove("is-open");
+    if (!listActionPopupEl) return;
+    listActionPopupEl.classList.remove("is-open");
+    setTimeout(() => listActionPopupEl.classList.remove("is-visible"), 320);
 }
 
 function showListActionPopup(action, listId, listName) {
@@ -318,9 +333,6 @@ function showListActionPopup(action, listId, listName) {
         listActionPopupEl = document.createElement("div");
         listActionPopupEl.className = "sentence-action-popup-backdrop list-action-popup-backdrop";
         listActionPopupEl.innerHTML = '<div class="sentence-action-popup list-action-popup"></div>';
-        listActionPopupEl.querySelector(".sentence-action-popup").style.left = "50%";
-        listActionPopupEl.querySelector(".sentence-action-popup").style.top = "50%";
-        listActionPopupEl.querySelector(".sentence-action-popup").style.transform = "translate(-50%, -50%)";
         listActionPopupEl.addEventListener("click", (e) => {
             if (e.target === listActionPopupEl) closeListActionPopup();
         });
@@ -358,23 +370,47 @@ function showListActionPopup(action, listId, listName) {
         `;
         popup.querySelector(".popup-cancel").addEventListener("click", closeListActionPopup);
         popup.querySelector(".popup-confirm").addEventListener("click", async () => {
-            await api.deleteList(listId);
-            if (state.selectedListId === listId) {
-                state.selectedListId = null;
+            try {
+                await api.deleteList(listId);
+            } catch (e) {
+                notify(e.message || "Failed to delete list.");
+                return;
             }
             closeListActionPopup();
-            await refreshAndRender();
+            const listCard = document.querySelector(`.list-item[data-list-id="${listId}"]`);
+            if (listCard) {
+                listCard.classList.add("is-completing");
+                listCard.addEventListener("transitionend", function onEnd(e) {
+                    if (e.target !== listCard || e.propertyName !== "max-height") return;
+                    listCard.removeEventListener("transitionend", onEnd);
+                    listCard.remove();
+                    state.lists = state.lists.filter((l) => l.id !== listId);
+                    if (state.selectedListId === listId) {
+                        state.selectedListId = null;
+                        renderApp();
+                    }
+                });
+            } else {
+                state.lists = state.lists.filter((l) => l.id !== listId);
+                if (state.selectedListId === listId) state.selectedListId = null;
+                await refreshAndRender();
+            }
         });
     }
 
-    listActionPopupEl.classList.add("is-open");
-    if (action === "rename") {
-        const input = popup.querySelector("#listRenameInput");
-        if (input) {
-            input.focus();
-            input.select();
-        }
-    }
+    listActionPopupEl.classList.add("is-visible");
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            listActionPopupEl.classList.add("is-open");
+            if (action === "rename") {
+                const input = popup.querySelector("#listRenameInput");
+                if (input) {
+                    input.focus();
+                    input.select();
+                }
+            }
+        });
+    });
 }
 
 function showSentenceActionPopup(action, sentenceId, data) {
@@ -422,9 +458,26 @@ function showSentenceActionPopup(action, sentenceId, data) {
         `;
         popup.querySelector(".popup-cancel").addEventListener("click", closeSentenceActionPopup);
         popup.querySelector(".popup-confirm").addEventListener("click", async () => {
-            await api.deleteSentence(sentenceId);
+            try {
+                await api.deleteSentence(sentenceId);
+            } catch (e) {
+                notify(e.message || "Failed to delete sentence.");
+                return;
+            }
             closeSentenceActionPopup();
-            await refreshAndRender();
+            const sentenceCard = document.querySelector(`.sentence-item[data-sentence-id="${sentenceId}"]`);
+            if (sentenceCard) {
+                sentenceCard.classList.add("is-completing");
+                sentenceCard.addEventListener("transitionend", function onEnd(e) {
+                    if (e.target !== sentenceCard || e.propertyName !== "max-height") return;
+                    sentenceCard.removeEventListener("transitionend", onEnd);
+                    sentenceCard.remove();
+                    state.sentences = state.sentences.filter((s) => s.id !== sentenceId);
+                    redrawMindMapCanvas();
+                });
+            } else {
+                await refreshAndRender();
+            }
         });
     } else if (action === "move") {
         const otherLists = (state.lists || []).filter((l) => l.id !== state.selectedListId);
@@ -553,6 +606,12 @@ function renderApp() {
           <button type="button" class="dashboard-tab ${state.currentSection === 1 ? "active" : ""}" data-section="1" role="tab">Reviews</button>
           <button type="button" class="dashboard-tab ${state.currentSection === 2 ? "active" : ""}" data-section="2" role="tab">Settings</button>
           <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
+          <div class="mind-map-zoom-controls mind-map-tabs-controls" style="display: ${state.currentSection === 3 ? "flex" : "none"}">
+            <button type="button" id="mindMapZoomOut" class="btn-icon secondary" title="Zoom out">−</button>
+            <span class="mind-map-zoom-label" id="mindMapZoomLabel">100%</span>
+            <button type="button" id="mindMapZoomIn" class="btn-icon secondary" title="Zoom in">+</button>
+            <button type="button" id="mindMapFullscreen" class="btn-icon secondary" title="Full screen">⛶</button>
+          </div>
         </div>
         ` : ""}
         <div class="dashboard-content">
@@ -619,7 +678,7 @@ function renderApp() {
               </ul>
             </div>
             <div class="dashboard-panel card" data-section="1" style="display: ${state.currentSection === 1 ? "block" : "none"}">
-              <h3>Pending Reviews (${notificationsCount})</h3>
+              <h3 data-pending-reviews-heading>Pending Reviews (${notificationsCount})</h3>
               <div id="pendingReviews"></div>
             </div>
             <div class="dashboard-panel card" data-section="2" style="display: ${state.currentSection === 2 ? "block" : "none"}">
@@ -634,16 +693,9 @@ function renderApp() {
               <input id="timezoneInput" class="input-soft" value="${escapeHtml(state.settings.timezone)}" placeholder="Timezone, e.g. UTC or Europe/Berlin" />
               <button id="saveSettingsBtn">Save settings</button>
             </div>
-            <div class="dashboard-panel card mind-map-section" data-section="3" style="display: ${state.currentSection === 3 ? "block" : "none"}">
+            <div class="dashboard-panel card mind-map-section" data-section="3" style="display: ${state.currentSection === 3 ? "flex" : "none"}">
               <h3>Mind Map (all lists)</h3>
-              <p class="hint">Circles from the same list are connected. Click a circle to open that list. Drag to move. Scroll to zoom.</p>
               <div class="mind-map-zoom-wrap">
-                <div class="mind-map-zoom-controls">
-                  <button type="button" id="mindMapZoomOut" class="btn-icon secondary" title="Zoom out">−</button>
-                  <span class="mind-map-zoom-label" id="mindMapZoomLabel">100%</span>
-                  <button type="button" id="mindMapZoomIn" class="btn-icon secondary" title="Zoom in">+</button>
-                  <button type="button" id="mindMapFullscreen" class="btn-icon secondary" title="Full screen">⛶</button>
-                </div>
                 <canvas id="mindMap" width="900" height="480"></canvas>
               </div>
             </div>
@@ -656,6 +708,52 @@ function renderApp() {
     bindDashboardTabs();
     renderPendingReviews();
     renderMindMap();
+
+    if (state.selectedListId && state.justOpenedListId === state.selectedListId) {
+        const listDetail = appEl.querySelector(".dashboard-list-detail");
+        if (listDetail) {
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    listDetail.classList.add("list-detail-open");
+                    state.justOpenedListId = null;
+                });
+            });
+        } else {
+            state.justOpenedListId = null;
+        }
+    } else if (state.selectedListId) {
+        const listDetail = appEl.querySelector(".dashboard-list-detail");
+        if (listDetail) listDetail.classList.add("list-detail-open");
+    }
+
+    if (state.newListId != null && !state.selectedListId && state.currentSection === 0) {
+        const listEl = document.querySelector(`.list-item[data-list-id="${state.newListId}"]`);
+        if (listEl) {
+            listEl.classList.add("is-adding");
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    listEl.classList.remove("is-adding");
+                    state.newListId = null;
+                });
+            });
+        } else {
+            state.newListId = null;
+        }
+    }
+    if (state.newSentenceId != null && state.selectedListId) {
+        const sentenceEl = document.querySelector(`.sentence-item[data-sentence-id="${state.newSentenceId}"]`);
+        if (sentenceEl) {
+            sentenceEl.classList.add("is-adding");
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    sentenceEl.classList.remove("is-adding");
+                    state.newSentenceId = null;
+                });
+            });
+        } else {
+            state.newSentenceId = null;
+        }
+    }
 
     if (state.savedListScrollY) {
         setTimeout(() => {
@@ -675,8 +773,10 @@ function bindDashboardTabs() {
             btn.classList.add("active");
             document.querySelectorAll(".dashboard-panel").forEach((panel) => {
                 const s = parseInt(panel.getAttribute("data-section"), 10);
-                panel.style.display = s === section ? "block" : "none";
+                panel.style.display = s === section ? (s === 3 ? "flex" : "block") : "none";
             });
+            const zoomControls = document.querySelector(".mind-map-tabs-controls");
+            if (zoomControls) zoomControls.style.display = section === 3 ? "flex" : "none";
             if (section === 3) {
                 renderMindMap();
             }
@@ -789,6 +889,13 @@ function renderReviewSessionPage() {
             startReviewVoiceCheck(session, idx);
         });
     });
+
+    const sessionPage = appEl.querySelector(".review-session-page");
+    if (sessionPage) {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => sessionPage.classList.add("review-session-open"));
+        });
+    }
 }
 
 function normalizeForComparison(text) {
@@ -965,12 +1072,77 @@ async function renderPendingReviews() {
         });
     });
     container.querySelectorAll("[data-session-complete]").forEach((button) => {
-        button.addEventListener("click", async () => {
+        button.addEventListener("click", () => {
             const id = Number(button.getAttribute("data-session-complete"));
-            await api.completeReviewSession(id);
-            await refreshAndRender();
+            showMarkReviewedConfirmPopup(id, async () => {
+                const card = button.closest(".pending-review-item");
+                try {
+                    await api.completeReviewSession(id);
+                } catch (e) {
+                    notify(e.message || "Failed to mark as reviewed.");
+                    return;
+                }
+                if (card) {
+                    card.classList.add("is-completing");
+                    card.addEventListener("transitionend", function onEnd(e) {
+                        if (e.target !== card || e.propertyName !== "max-height") return;
+                        card.removeEventListener("transitionend", onEnd);
+                        card.remove();
+                        state.pendingSessions = state.pendingSessions.filter((s) => s.id !== id);
+                        const reviewsHeading = document.querySelector("[data-pending-reviews-heading]");
+                        if (reviewsHeading) reviewsHeading.textContent = `Pending Reviews (${state.pendingSessions.length})`;
+                    });
+                } else {
+                    await refreshAndRender();
+                }
+            });
         });
     });
+}
+
+let markReviewedConfirmEl = null;
+
+function showMarkReviewedConfirmPopup(sessionId, onConfirm) {
+    if (!markReviewedConfirmEl) {
+        markReviewedConfirmEl = document.createElement("div");
+        markReviewedConfirmEl.className = "sentence-action-popup-backdrop mark-reviewed-confirm-backdrop";
+        markReviewedConfirmEl.innerHTML = `
+          <div class="sentence-action-popup mark-reviewed-confirm-popup">
+            <h4>Mark as reviewed</h4>
+            <p class="mark-reviewed-confirm-message">Are you sure you want to mark it as reviewed?</p>
+            <div class="popup-actions">
+              <button type="button" class="secondary popup-cancel">Cancel</button>
+              <button type="button" class="popup-confirm mark-reviewed-confirm-btn">Mark reviewed</button>
+            </div>
+          </div>
+        `;
+        markReviewedConfirmEl.addEventListener("click", (e) => {
+            if (e.target === markReviewedConfirmEl) closeMarkReviewedConfirmPopup();
+        });
+        document.body.appendChild(markReviewedConfirmEl);
+    }
+    const popup = markReviewedConfirmEl.querySelector(".mark-reviewed-confirm-popup");
+    const cancelBtn = popup.querySelector(".popup-cancel");
+    const confirmBtn = popup.querySelector(".mark-reviewed-confirm-btn");
+    cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+    confirmBtn.replaceWith(confirmBtn.cloneNode(true));
+    const newCancel = popup.querySelector(".popup-cancel");
+    const newConfirm = popup.querySelector(".mark-reviewed-confirm-btn");
+    newCancel.addEventListener("click", () => closeMarkReviewedConfirmPopup());
+    newConfirm.addEventListener("click", () => {
+        closeMarkReviewedConfirmPopup();
+        onConfirm();
+    });
+    markReviewedConfirmEl.classList.add("is-visible");
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => markReviewedConfirmEl.classList.add("is-open"));
+    });
+}
+
+function closeMarkReviewedConfirmPopup() {
+    if (!markReviewedConfirmEl) return;
+    markReviewedConfirmEl.classList.remove("is-open");
+    setTimeout(() => markReviewedConfirmEl.classList.remove("is-visible"), 320);
 }
 
 function bindDashboardActions() {
@@ -979,7 +1151,8 @@ function bindDashboardActions() {
         createListBtn.addEventListener("click", async () => {
             const name = document.getElementById("newListName").value.trim();
             if (!name) return;
-            await api.createList({ name });
+            const created = await api.createList({ name });
+            state.newListId = created?.id ?? null;
             await refreshAndRender();
         });
     }
@@ -988,7 +1161,9 @@ function bindDashboardActions() {
         button.addEventListener("click", async () => {
             state.openedListFromMindMap = false;
             state.restoreMindMapFullscreen = false;
-            state.selectedListId = Number(button.getAttribute("data-list-open"));
+            const listId = Number(button.getAttribute("data-list-open"));
+            state.selectedListId = listId;
+            state.justOpenedListId = listId;
             await refreshAndRender();
         });
     });
@@ -1000,6 +1175,7 @@ function bindDashboardActions() {
             state.openedListFromMindMap = false;
             state.restoreMindMapFullscreen = false;
             state.selectedListId = listId;
+            state.justOpenedListId = listId;
             await refreshAndRender();
         });
         el.addEventListener("keydown", (e) => {
@@ -1029,7 +1205,8 @@ function bindDashboardActions() {
         addSentenceBtn.addEventListener("click", async () => {
             const content = document.getElementById("newSentence").value.trim();
             if (!content) return;
-            await api.addSentence(state.selectedListId, { content });
+            const created = await api.addSentence(state.selectedListId, { content });
+            state.newSentenceId = created?.id ?? null;
             await refreshAndRender();
         });
     }
@@ -1148,6 +1325,13 @@ async function refreshAndRender() {
 
 const MIND_MAP_CANVAS_WIDTH = 900;
 const MIND_MAP_CANVAS_HEIGHT = 480;
+const MIND_MAP_PAN_MARGIN = 60;
+const MIND_MAP_PAN_RUBBER_BAND = 0.35;
+const MIND_MAP_PAN_RUBBER_MAX_OVERFLOW = 80;
+const MIND_MAP_PAN_INERTIA_FRICTION = 0.92;
+const MIND_MAP_PAN_INERTIA_MIN_VELOCITY = 0.15;
+const MIND_MAP_PAN_SNAPBACK_DURATION_MS = 280;
+const MIND_MAP_BORDER_PADDING = 28;
 const MIND_MAP_BASE_RADIUS = 32;
 const MIND_MAP_RADIUS_PER_REVIEW = 5;
 const MIND_MAP_MAX_RADIUS = 72;
@@ -1193,8 +1377,8 @@ function getMindMapNodePositions(nodes, width, height) {
         const r = Math.max(maxR * 2, circumference / (2 * Math.PI));
         return r;
     });
-    const maxListR = Math.max(80, ...listClusterRadii);
-    const clusterDist = Math.max(160 * viewScale, 2 * maxListR + maxRadius * 2);
+    const maxListR = Math.max(36, ...listClusterRadii);
+    const clusterDist = Math.max(34 * viewScale, 2 * maxListR + maxRadius * 2);
 
     const result = nodes.map((node) => {
         const saved = positions[node.id];
@@ -1292,16 +1476,6 @@ function redrawMindMapCanvas() {
     if (!ctx) return;
 
     const nodes = (data && data.nodes && Array.isArray(data.nodes)) ? data.nodes : [];
-    if (nodes.length === 0) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "#586173";
-        ctx.font = "14px sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText("Add sentences to your lists to see them here.", canvas.width / 2, canvas.height / 2);
-        state.mindMapLastPositions = [];
-        return;
-    }
 
     // Use the canvas's displayed size so the buffer aspect ratio matches the CSS box (keeps circles round on mobile).
     const rect = canvas.getBoundingClientRect();
@@ -1315,17 +1489,132 @@ function redrawMindMapCanvas() {
 
     const scale = state.mindMapScale;
     const basePan = { x: cw / 2 * (1 - scale), y: ch / 2 * (1 - scale) };
-    state.mindMapPan = {
-        x: basePan.x + (state.mindMapUserPan?.x ?? 0),
-        y: basePan.y + (state.mindMapUserPan?.y ?? 0)
-    };
 
     const positions = getMindMapNodePositions(nodes, canvas.width, canvas.height);
     state.mindMapLastPositions = positions;
 
+    let rawPanX = basePan.x + (state.mindMapUserPan?.x ?? 0);
+    let rawPanY = basePan.y + (state.mindMapUserPan?.y ?? 0);
+    let contentBounds = null;
+    if (positions.length > 0) {
+        if (state.mindMapCenterListId != null) {
+            const listPositions = positions.filter((p) => p.node.listId === state.mindMapCenterListId);
+            if (listPositions.length > 0) {
+                const cx = listPositions.reduce((s, p) => s + p.x, 0) / listPositions.length;
+                const cy = listPositions.reduce((s, p) => s + p.y, 0) / listPositions.length;
+                rawPanX = cw / 2 - scale * cx;
+                rawPanY = ch / 2 - scale * cy;
+                state.mindMapUserPan = { x: rawPanX - basePan.x, y: rawPanY - basePan.y };
+            }
+            state.mindMapCenterListId = null;
+        }
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        positions.forEach(({ node, x, y }) => {
+            const r = getCircleRadius(node);
+            minX = Math.min(minX, x - r);
+            minY = Math.min(minY, y - r);
+            maxX = Math.max(maxX, x + r);
+            maxY = Math.max(maxY, y + r);
+        });
+        const pad = MIND_MAP_BORDER_PADDING;
+        contentBounds = { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+        const b = contentBounds;
+        let panMinX = cw - scale * b.maxX;
+        let panMaxX = -scale * b.minX;
+        let panMinY = ch - scale * b.maxY;
+        let panMaxY = -scale * b.minY;
+        if (panMinX > panMaxX) {
+            panMinX = panMaxX = (panMinX + panMaxX) / 2;
+        }
+        if (panMinY > panMaxY) {
+            panMinY = panMaxY = (panMinY + panMaxY) / 2;
+        }
+        state.mindMapPanBounds = { panMinX, panMaxX, panMinY, panMaxY, basePan };
+        const rubber = MIND_MAP_PAN_RUBBER_BAND;
+        const overflowMax = MIND_MAP_PAN_RUBBER_MAX_OVERFLOW;
+        let displayPanX = rawPanX;
+        let displayPanY = rawPanY;
+        const allowOverflow = state.mindMapPanning || state.mindMapInertialAnimating || state.mindMapSnapBackAnimating;
+        if (state.mindMapPanning) {
+            const now = performance.now();
+            if (state.mindMapLastPanTime > 0 && (now - state.mindMapLastPanTime) > 0) {
+                const dt = (now - state.mindMapLastPanTime) / 1000;
+                const last = state.mindMapLastDisplayPan;
+                if (last) {
+                    state.mindMapPanVelocity.vx = (rawPanX - last.x) / dt;
+                    state.mindMapPanVelocity.vy = (rawPanY - last.y) / dt;
+                }
+            }
+            state.mindMapLastDisplayPan = { x: rawPanX, y: rawPanY };
+            state.mindMapLastPanTime = now;
+        }
+        if (allowOverflow) {
+            if (state.mindMapSnapBackAnimating) {
+                displayPanX = Math.max(panMinX - overflowMax, Math.min(panMaxX + overflowMax, rawPanX));
+                displayPanY = Math.max(panMinY - overflowMax, Math.min(panMaxY + overflowMax, rawPanY));
+            } else {
+                displayPanX = rawPanX > panMaxX ? panMaxX + (rawPanX - panMaxX) * rubber : rawPanX < panMinX ? panMinX + (rawPanX - panMinX) * rubber : rawPanX;
+                displayPanY = rawPanY > panMaxY ? panMaxY + (rawPanY - panMaxY) * rubber : rawPanY < panMinY ? panMinY + (rawPanY - panMinY) * rubber : rawPanY;
+                displayPanX = Math.max(panMinX - overflowMax, Math.min(panMaxX + overflowMax, displayPanX));
+                displayPanY = Math.max(panMinY - overflowMax, Math.min(panMaxY + overflowMax, displayPanY));
+            }
+        } else {
+            displayPanX = Math.max(panMinX, Math.min(panMaxX, displayPanX));
+            displayPanY = Math.max(panMinY, Math.min(panMaxY, displayPanY));
+        }
+        if (!state.mindMapInertialAnimating && !state.mindMapSnapBackAnimating) {
+            state.mindMapUserPan = { x: displayPanX - basePan.x, y: displayPanY - basePan.y };
+        }
+        rawPanX = displayPanX;
+        rawPanY = displayPanY;
+    }
+    state.mindMapPan = { x: rawPanX, y: rawPanY };
+
+    if (nodes.length === 0) {
+        state.mindMapLastPositions = [];
+    }
+
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(scale, 0, 0, scale, state.mindMapPan.x, state.mindMapPan.y);
+
+    const pan = state.mindMapPan;
+    const viewportBounds = {
+        minX: -pan.x / scale,
+        minY: -pan.y / scale,
+        maxX: (cw - pan.x) / scale,
+        maxY: (ch - pan.y) / scale
+    };
+    const { minX, minY, maxX, maxY } = viewportBounds;
+    const w = maxX - minX;
+    const h = maxY - minY;
+    const cornerRadius = Math.min(12, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(minX + cornerRadius, minY);
+    ctx.lineTo(maxX - cornerRadius, minY);
+    ctx.arc(maxX - cornerRadius, minY + cornerRadius, cornerRadius, -Math.PI / 2, 0);
+    ctx.lineTo(maxX, maxY - cornerRadius);
+    ctx.arc(maxX - cornerRadius, maxY - cornerRadius, cornerRadius, 0, Math.PI / 2);
+    ctx.lineTo(minX + cornerRadius, maxY);
+    ctx.arc(minX + cornerRadius, maxY - cornerRadius, cornerRadius, Math.PI / 2, Math.PI);
+    ctx.lineTo(minX, minY + cornerRadius);
+    ctx.arc(minX + cornerRadius, minY + cornerRadius, cornerRadius, Math.PI, (3 * Math.PI) / 2);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(168, 150, 255, 0.08)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(168, 150, 255, 0.28)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    if (nodes.length === 0) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = "#586173";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Add sentences to your lists to see them here.", canvas.width / 2, canvas.height / 2);
+        return;
+    }
 
     const byListId = new Map();
     positions.forEach(({ node, x, y }) => {
@@ -1335,13 +1624,21 @@ function redrawMindMapCanvas() {
     });
     byListId.forEach((listNodes) => {
         listNodes.sort((a, b) => (a.node.index ?? 0) - (b.node.index ?? 0));
-        ctx.strokeStyle = "rgba(31, 59, 102, 0.35)";
+        ctx.strokeStyle = "rgba(168, 150, 255, 0.35)";
         ctx.lineWidth = 2;
         ctx.beginPath();
         for (let k = 0; k < listNodes.length - 1; k++) {
             const a = listNodes[k], b = listNodes[k + 1];
-            ctx.moveTo(a.x, a.y);
-            ctx.lineTo(b.x, b.y);
+            const ra = getCircleRadius(a.node);
+            const rb = getCircleRadius(b.node);
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < 1e-6) continue;
+            const ux = dx / dist;
+            const uy = dy / dist;
+            ctx.moveTo(a.x + ra * ux, a.y + ra * uy);
+            ctx.lineTo(b.x - rb * ux, b.y - rb * uy);
         }
         ctx.stroke();
     });
@@ -1466,6 +1763,11 @@ async function renderMindMap() {
     if (!state.mindMapPositions || Array.isArray(state.mindMapPositions)) {
         state.mindMapPositions = {};
     }
+    const nodes = (data && data.nodes) ? data.nodes : [];
+    const listIdsWithNodes = [...new Set(nodes.map((n) => n.listId).filter(Boolean))];
+    state.mindMapCenterListId =
+        (state.selectedListId && listIdsWithNodes.includes(state.selectedListId) ? state.selectedListId : null) ||
+        (listIdsWithNodes.length > 0 ? listIdsWithNodes[0] : null);
 
     redrawMindMapCanvas();
 
@@ -1487,7 +1789,9 @@ async function renderMindMap() {
         const upHandler = (e2) => {
             if ((e2.type === "touchend" || e2.type === "touchcancel") && didMove) state.mindMapJustDragged = true;
             if ((e2.type === "touchend" || e2.type === "touchcancel") && !didMove) {
-                state.selectedListId = node.listId != null ? node.listId : state.selectedListId;
+                const listId = node.listId != null ? node.listId : state.selectedListId;
+                state.selectedListId = listId;
+                state.justOpenedListId = listId;
                 state.selectedSentenceId = node.id;
                 state.openedListFromMindMap = true;
                 state.restoreMindMapFullscreen = !!state.mindMapFullscreenParent;
@@ -1516,8 +1820,99 @@ async function renderMindMap() {
         document.addEventListener("touchcancel", touchEndHandler);
     }
 
+    function startSnapBackToBounds() {
+        const bounds = state.mindMapPanBounds;
+        if (!bounds) return;
+        const { panMinX, panMaxX, panMinY, panMaxY, basePan } = bounds;
+        const panX = basePan.x + state.mindMapUserPan.x;
+        const panY = basePan.y + state.mindMapUserPan.y;
+        const targetX = Math.max(panMinX, Math.min(panMaxX, panX));
+        const targetY = Math.max(panMinY, Math.min(panMaxY, panY));
+        if (Math.abs(panX - targetX) < 0.5 && Math.abs(panY - targetY) < 0.5) {
+            state.mindMapUserPan = { x: targetX - basePan.x, y: targetY - basePan.y };
+            redrawMindMapCanvas();
+            return;
+        }
+        state.mindMapSnapBackAnimating = true;
+        state.mindMapSnapBackData = {
+            startX: panX, startY: panY,
+            targetX, targetY,
+            startTime: performance.now(),
+            duration: MIND_MAP_PAN_SNAPBACK_DURATION_MS,
+            basePan
+        };
+        state.mindMapSnapBackRAF = requestAnimationFrame(runSnapBack);
+    }
+
+    function runSnapBack() {
+        const data = state.mindMapSnapBackData;
+        if (!data) {
+            state.mindMapSnapBackAnimating = false;
+            state.mindMapSnapBackRAF = null;
+            return;
+        }
+        const { startX, startY, targetX, targetY, startTime, duration, basePan } = data;
+        const now = performance.now();
+        let t = (now - startTime) / duration;
+        if (t >= 1) {
+            state.mindMapUserPan = { x: targetX - basePan.x, y: targetY - basePan.y };
+            state.mindMapSnapBackAnimating = false;
+            state.mindMapSnapBackData = null;
+            state.mindMapSnapBackRAF = null;
+            redrawMindMapCanvas();
+            return;
+        }
+        const ease = 1 - (1 - t) * (1 - t);
+        const panX = startX + (targetX - startX) * ease;
+        const panY = startY + (targetY - startY) * ease;
+        state.mindMapUserPan = { x: panX - basePan.x, y: panY - basePan.y };
+        redrawMindMapCanvas();
+        state.mindMapSnapBackRAF = requestAnimationFrame(runSnapBack);
+    }
+
+    function runInertialPan() {
+        const bounds = state.mindMapPanBounds;
+        if (!bounds) return;
+        const { panMinX, panMaxX, panMinY, panMaxY, basePan } = bounds;
+        let { vx, vy } = state.mindMapPanVelocity;
+        let panX = basePan.x + state.mindMapUserPan.x;
+        let panY = basePan.y + state.mindMapUserPan.y;
+        const now = performance.now();
+        const dt = Math.min((now - (state.mindMapLastPanTime || now)) / 1000, 0.05) || 0.016;
+        state.mindMapLastPanTime = now;
+        panX += vx * dt;
+        panY += vy * dt;
+        vx *= MIND_MAP_PAN_INERTIA_FRICTION;
+        vy *= MIND_MAP_PAN_INERTIA_FRICTION;
+        state.mindMapPanVelocity = { vx, vy };
+        state.mindMapUserPan = { x: panX - basePan.x, y: panY - basePan.y };
+        redrawMindMapCanvas();
+        const stillMoving = Math.abs(vx) > MIND_MAP_PAN_INERTIA_MIN_VELOCITY || Math.abs(vy) > MIND_MAP_PAN_INERTIA_MIN_VELOCITY;
+        if (stillMoving) {
+            state.mindMapInertialRAF = requestAnimationFrame(runInertialPan);
+        } else {
+            state.mindMapInertialAnimating = false;
+            state.mindMapPanVelocity = { vx: 0, vy: 0 };
+            state.mindMapLastPanTime = 0;
+            state.mindMapInertialRAF = null;
+            startSnapBackToBounds();
+        }
+    }
+
     function startMapPan(clientX, clientY) {
+        if (state.mindMapInertialRAF != null) {
+            cancelAnimationFrame(state.mindMapInertialRAF);
+            state.mindMapInertialRAF = null;
+            state.mindMapInertialAnimating = false;
+        }
+        if (state.mindMapSnapBackRAF != null) {
+            cancelAnimationFrame(state.mindMapSnapBackRAF);
+            state.mindMapSnapBackRAF = null;
+            state.mindMapSnapBackAnimating = false;
+            state.mindMapSnapBackData = null;
+        }
         state.mindMapPanning = true;
+        state.mindMapLastPanTime = 0;
         const startClientX = clientX;
         const startClientY = clientY;
         const startUserPan = { x: state.mindMapUserPan.x, y: state.mindMapUserPan.y };
@@ -1539,6 +1934,17 @@ async function renderMindMap() {
             document.removeEventListener("touchend", touchEndHandler);
             document.removeEventListener("touchcancel", touchEndHandler);
             canvas.style.cursor = "grab";
+            const v = state.mindMapPanVelocity;
+            const hasVelocity = Math.abs(v.vx) > MIND_MAP_PAN_INERTIA_MIN_VELOCITY || Math.abs(v.vy) > MIND_MAP_PAN_INERTIA_MIN_VELOCITY;
+            if (hasVelocity && state.mindMapPanBounds) {
+                state.mindMapInertialAnimating = true;
+                state.mindMapLastPanTime = performance.now();
+                state.mindMapInertialRAF = requestAnimationFrame(runInertialPan);
+            } else {
+                state.mindMapLastPanTime = 0;
+                state.mindMapPanVelocity = { vx: 0, vy: 0 };
+                startSnapBackToBounds();
+            }
         };
         const touchMoveHandler = (e2) => {
             e2.preventDefault();
@@ -1586,7 +1992,9 @@ async function renderMindMap() {
         const { x, y } = canvasCoords(canvas, e.clientX, e.clientY);
         const node = hitTestNode(x, y);
         if (!node) return;
-        state.selectedListId = node.listId != null ? node.listId : state.selectedListId;
+        const listId = node.listId != null ? node.listId : state.selectedListId;
+        state.selectedListId = listId;
+        state.justOpenedListId = listId;
         state.selectedSentenceId = node.id;
         state.openedListFromMindMap = true;
         state.restoreMindMapFullscreen = !!state.mindMapFullscreenParent;
