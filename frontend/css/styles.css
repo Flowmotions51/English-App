@@ -4,8 +4,8 @@
 
 body {
     margin: 0;
-    font-family: Arial, sans-serif;
-    background: #f4f6f9;
+    font-family: "Playfair Display", Georgia, serif;
+    background: rgb(168, 150, 255);
     color: #1d2433;
     -webkit-text-size-adjust: 100%;
     overflow-x: hidden;
@@ -25,7 +25,7 @@ body {
     padding-top: max(16px, env(safe-area-inset-top));
     padding-left: max(24px, env(safe-area-inset-left));
     padding-right: max(24px, env(safe-area-inset-right));
-    background: #1f3b66;
+    background: rgb(125, 99, 255);
     color: #fff;
     flex-wrap: wrap;
 }
@@ -61,9 +61,9 @@ body {
 
 .dashboard-tab {
     padding: 8px 16px;
-    border: 2px solid #1f3b66;
+    border: 2px solid rgb(125, 99, 255);
     background: #fff;
-    color: #1f3b66;
+    color: rgb(125, 99, 255);
     font: inherit;
     font-weight: 600;
     border-radius: 8px;
@@ -72,11 +72,11 @@ body {
 }
 
 .dashboard-tab:hover {
-    background: #e8eef7;
+    background: rgb(200, 188, 255);
 }
 
 .dashboard-tab.active {
-    background: #1f3b66;
+    background: rgb(125, 99, 255);
     color: #fff;
 }
 
@@ -92,6 +92,33 @@ body {
 .dashboard-list-detail .list-search-row input {
     flex: 1;
     min-width: 0;
+}
+
+/* Borderless soft inputs (new list, search, add sentence) */
+.input-soft {
+    min-height: 52px;
+    padding: 14px 18px;
+    font-size: 1.05rem;
+    line-height: 1.45;
+    border: none;
+    border-radius: 12px;
+    background: rgb(168, 150, 255);
+    color: #1d2433;
+    transition: background 0.2s, box-shadow 0.2s;
+}
+
+.input-soft::placeholder {
+    color: rgba(29, 36, 51, 0.6);
+}
+
+.input-soft:hover {
+    background: rgb(178, 162, 255);
+}
+
+.input-soft:focus {
+    outline: none;
+    background: #fff;
+    box-shadow: 0 0 0 2px rgb(125, 99, 255);
 }
 
 .sentence-list-sentinel {
@@ -151,7 +178,7 @@ body {
     position: fixed;
     inset: 0;
     z-index: 9999;
-    background: #f4f6f9;
+    background: rgb(168, 150, 255);
     display: flex;
     flex-direction: column;
     padding: 12px;
@@ -231,6 +258,54 @@ body {
     box-shadow: 0 2px 8px rgba(15, 20, 30, 0.08);
 }
 
+.pending-review-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.pending-review-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.pending-review-title {
+    font-size: 1.25rem;
+    line-height: 1.35;
+}
+
+.pending-review-meta {
+    font-size: 1.05rem;
+    color: #586173;
+    margin-top: 4px;
+}
+
+.pending-review-actions {
+    flex: 0 0 30%;
+    min-width: 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.pending-review-actions button {
+    flex: 0 1 auto;
+}
+
+@media (max-width: 480px) {
+    .pending-review-item {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .pending-review-actions {
+        flex: 0 0 auto;
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
+
 input, button, select {
     font: inherit;
 }
@@ -246,7 +321,7 @@ button {
     border-radius: 8px;
     padding: 8px 10px;
     cursor: pointer;
-    background: #2f6fdd;
+    background: rgb(125, 99, 255);
     color: #fff;
     min-height: 44px;
     touch-action: manipulation;
@@ -283,6 +358,17 @@ button.danger {
     flex: 0 0 auto;
 }
 
+.sentence-actions button,
+.list-actions button {
+    background: rgb(125, 99, 255);
+    transition: background 0.2s ease;
+}
+
+.sentence-actions button:active,
+.list-actions button:active {
+    background: rgb(168, 150, 255);
+}
+
 ul {
     list-style: none;
     padding: 0;
@@ -303,9 +389,9 @@ li {
 }
 
 .sentence-item.selected {
-    border-color: #1f3b66;
-    background: #e8eef7;
-    box-shadow: 0 0 0 2px #1f3b66;
+    border-color: rgb(125, 99, 255);
+    background: rgb(200, 188, 255);
+    box-shadow: 0 0 0 2px rgb(125, 99, 255);
 }
 
 .sentence-action-popup-backdrop {
@@ -387,7 +473,7 @@ li {
 }
 
 .sentence-action-popup .move-list-option:hover {
-    background: #e8eef7;
+    background: rgb(200, 188, 255);
 }
 
 .list-action-popup-backdrop .list-delete-message {
@@ -420,6 +506,29 @@ li {
 .show-lists-btn {
     display: inline-block;
     margin-bottom: 10px;
+    background: rgb(125, 99, 255);
+    transition: background 0.2s ease;
+}
+
+.show-lists-btn:active {
+    background: rgb(168, 150, 255);
+}
+
+.add-sentence-row {
+    align-items: stretch;
+}
+
+.add-sentence-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.add-sentence-btn {
+    flex: 0 0 auto;
+    min-height: 52px;
+    padding: 14px 20px;
+    font-weight: 600;
+    border-radius: 12px;
 }
 
 .list-item {
@@ -436,12 +545,18 @@ li {
 }
 
 .list-item-main:hover {
-    color: #1f3b66;
+    color: rgb(125, 99, 255);
 }
 
 .list-item-main:focus {
-    outline: 2px solid #2f6fdd;
+    outline: 2px solid rgb(125, 99, 255);
     outline-offset: 2px;
+}
+
+.list-item-sentence-count {
+    font-weight: normal;
+    color: var(--muted, #666);
+    font-size: 0.9em;
 }
 
 .row {
@@ -570,7 +685,7 @@ li {
     line-height: 1.5;
     margin: 0 0 12px 0;
     padding: 10px 12px;
-    background: #f4f6f9;
+    background: rgb(220, 212, 255);
     border-radius: 8px;
     border: 1px solid #e2e7f0;
 }
@@ -595,13 +710,10 @@ li {
 
 .dict-word {
     cursor: pointer;
-    text-decoration: underline;
-    text-decoration-style: dotted;
-    text-underline-offset: 2px;
 }
 
 .dict-word:hover {
-    color: #1f3b66;
+    color: rgb(125, 99, 255);
 }
 
 .definition-modal {
@@ -686,7 +798,7 @@ li {
     display: inline-block;
     font-size: 0.75rem;
     text-transform: uppercase;
-    color: #1f3b66;
+    color: rgb(125, 99, 255);
     font-weight: 600;
     margin-bottom: 4px;
 }
@@ -699,9 +811,37 @@ li {
 
 @media (max-width: 768px) {
     .btn-icon {
-        min-width: 44px;
-        min-height: 44px;
-        padding: 10px 12px;
+        min-width: 48px;
+        min-height: 48px;
+        padding: 12px 14px;
+        font-size: 1.1rem;
+    }
+
+    button:not(.btn-icon) {
+        min-height: 48px;
+        padding: 12px 18px;
+    }
+
+    .add-sentence-input,
+    .add-sentence-btn,
+    .input-soft {
+        min-height: 56px;
+    }
+
+    .add-sentence-input,
+    .input-soft {
+        padding: 16px 20px;
+        font-size: 16px;
+    }
+
+    .add-sentence-btn {
+        padding: 16px 22px;
+    }
+
+    .sentence-actions .btn-icon,
+    .list-actions .btn-icon {
+        min-width: 48px;
+        min-height: 48px;
     }
 
     .sentence-item .sentence-item-content {

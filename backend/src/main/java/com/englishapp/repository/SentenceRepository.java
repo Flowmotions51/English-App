@@ -22,4 +22,6 @@ public interface SentenceRepository extends JpaRepository<Sentence, Long> {
 
     @Query("select s from Sentence s where s.sentenceList.user.id = :userId")
     List<Sentence> findAllByUserId(@Param("userId") Long userId);
+
+    long countBySentenceList_IdAndSentenceList_User_Id(Long listId, Long userId);
 }

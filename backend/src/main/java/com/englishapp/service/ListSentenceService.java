@@ -32,11 +32,15 @@ public class ListSentenceService {
 
     public List<Map<String, Object>> getLists(Long userId) {
         return sentenceListRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
-                .map(list -> Map.<String, Object>of(
-                        "id", list.getId(),
-                        "name", list.getName(),
-                        "createdAt", list.getCreatedAt()
-                ))
+                .map(list -> {
+                    long sentenceCount = sentenceRepository.countBySentenceList_IdAndSentenceList_User_Id(list.getId(), userId);
+                    return Map.<String, Object>of(
+                            "id", list.getId(),
+                            "name", list.getName(),
+                            "createdAt", list.getCreatedAt(),
+                            "sentenceCount", sentenceCount
+                    );
+                })
                 .toList();
     }
 

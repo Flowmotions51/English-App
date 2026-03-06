@@ -561,12 +561,12 @@ function renderApp() {
               <button type="button" id="showListsBtn" class="show-lists-btn secondary">${state.openedListFromMindMap ? "← Mind Map" : "← Lists"}</button>
               <h2 class="dashboard-content-title">${selectedList ? escapeHtml(selectedList.name) : ""}</h2>
               ${selectedList ? html`
-                <div class="row">
-                  <input id="newSentence" placeholder="Add sentence to memorize" />
-                  <button id="addSentenceBtn">Add sentence</button>
+                <div class="row add-sentence-row">
+                  <input id="newSentence" class="add-sentence-input input-soft" placeholder="Add sentence to memorize" />
+                  <button id="addSentenceBtn" class="add-sentence-btn">Add sentence</button>
                 </div>
                 <div class="row list-search-row">
-                  <input id="listSearchInput" type="search" placeholder="Search in list…" value="${escapeHtml(state.listSearchQuery || "")}" autocomplete="off" />
+                  <input id="listSearchInput" type="search" class="input-soft" placeholder="Search in list…" value="${escapeHtml(state.listSearchQuery || "")}" autocomplete="off" />
                 </div>
                 <div class="hint">New sentences are auto-scheduled by default pattern (1h, 3h, 6h, 1d, 2d, 1w).</div>
                 <ul class="sentence-list">
@@ -599,14 +599,14 @@ function renderApp() {
             <div class="dashboard-panel card" data-section="0" style="display: ${state.currentSection === 0 ? "block" : "none"}">
               <h3>Sentence Lists</h3>
               <div class="row">
-                <input id="newListName" placeholder="New list name" />
+                <input id="newListName" class="input-soft" placeholder="New list name" />
                 <button id="createListBtn">Create</button>
               </div>
               <ul class="lists-list">
                 ${state.lists.map((list) => html`
                   <li class="list-item" data-list-id="${list.id}">
                     <div class="list-item-main" role="button" tabindex="0" title="Open list">
-                      <div><b>${escapeHtml(list.name)}</b></div>
+                      <div><b>${escapeHtml(list.name)}</b> <span class="list-item-sentence-count">${Number(list.sentenceCount) || 0} sentence${(Number(list.sentenceCount) || 0) === 1 ? "" : "s"}</span></div>
                       <div class="hint">Created: ${new Date(list.createdAt).toLocaleString()}</div>
                     </div>
                     <div class="row list-actions">
@@ -626,12 +626,12 @@ function renderApp() {
               <h3>Settings</h3>
               <div class="hint">Merge window defines how close due sentences are grouped in one session.</div>
               <div class="row">
-                <input id="mergeWindowInput" type="number" min="10" value="${state.settings.mergeWindowMinutes}" />
-                <select id="weeklyDayInput">
+                <input id="mergeWindowInput" type="number" class="input-soft" min="10" value="${state.settings.mergeWindowMinutes}" />
+                <select id="weeklyDayInput" class="input-soft">
                   ${[1,2,3,4,5,6,7].map((d) => html`<option value="${d}" ${state.settings.weeklyReviewDay === d ? "selected" : ""}>Day ${d}</option>`).join("")}
                 </select>
               </div>
-              <input id="timezoneInput" value="${escapeHtml(state.settings.timezone)}" placeholder="Timezone, e.g. UTC or Europe/Berlin" />
+              <input id="timezoneInput" class="input-soft" value="${escapeHtml(state.settings.timezone)}" placeholder="Timezone, e.g. UTC or Europe/Berlin" />
               <button id="saveSettingsBtn">Save settings</button>
             </div>
             <div class="dashboard-panel card mind-map-section" data-section="3" style="display: ${state.currentSection === 3 ? "block" : "none"}">
@@ -933,12 +933,14 @@ async function renderPendingReviews() {
     container.innerHTML = state.pendingSessions.length === 0
         ? "<p class='hint'>No pending review sessions.</p>"
         : state.pendingSessions.map((session) => html`
-            <div class="card">
-              <div><b>Session ${session.id}</b></div>
-              <div class="hint">
-                ${new Date(session.startAt).toLocaleString()} (${session.items.length} sentences)
+            <div class="card pending-review-item">
+              <div class="pending-review-info">
+                <div class="pending-review-title"><b>Session ${session.id}</b></div>
+                <div class="pending-review-meta">
+                  ${new Date(session.startAt).toLocaleString()} (${session.items.length} sentences)
+                </div>
               </div>
-              <div class="row">
+              <div class="pending-review-actions">
                 <button data-session-open="${session.id}" class="secondary">Open</button>
                 <button data-session-complete="${session.id}">Mark reviewed</button>
               </div>
@@ -1110,6 +1112,7 @@ function bindDashboardActions() {
         );
         observer.observe(sentinel);
     }
+
 }
 
 async function loadMoreSentences() {
@@ -1356,7 +1359,7 @@ function redrawMindMapCanvas() {
         ctx.fill();
         ctx.globalAlpha = 1;
         if (isSelected) {
-            ctx.strokeStyle = "#1f3b66";
+            ctx.strokeStyle = "rgb(125, 99, 255)";
             ctx.lineWidth = 4;
             ctx.stroke();
         }
