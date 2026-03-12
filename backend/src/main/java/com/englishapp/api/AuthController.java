@@ -40,6 +40,18 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("status", "ok"));
     }
 
+    @PostMapping("/forgot-password")
+    public ResponseEntity<Map<String, String>> forgotPassword(@RequestBody @Valid ForgotPasswordRequest request) {
+        authService.requestPasswordReset(request.email());
+        return ResponseEntity.ok(Map.of("message", "If an account exists with this email, you will receive reset instructions."));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<Map<String, String>> resetPassword(@RequestBody @Valid ResetPasswordRequest request) {
+        authService.resetPassword(request.token(), request.newPassword());
+        return ResponseEntity.ok(Map.of("message", "Password has been reset. You can now log in."));
+    }
+
     @GetMapping("/me")
     public ResponseEntity<Map<String, Object>> me(Authentication authentication) {
         return ResponseEntity.ok(authService.me(authentication));
@@ -48,6 +60,15 @@ public class AuthController {
     public record AuthRequest(
             @NotBlank @Email String email,
             @NotBlank @Size(min = 8, max = 128) String password
+    ) {
+    }
+
+    public record ForgotPasswordRequest(@NotBlank @Email String email) {
+    }
+
+    public record ResetPasswordRequest(
+            @NotBlank String token,
+            @NotBlank @Size(min = 8, max = 128) String newPassword
     ) {
     }
 }

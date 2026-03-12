@@ -1,5 +1,6 @@
 package com.englishapp.api;
 
+import com.englishapp.service.DuplicateSentenceException;
 import com.englishapp.service.NotFoundException;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
@@ -18,6 +19,14 @@ public class ApiExceptionHandler {
     @ExceptionHandler(NotFoundException.class)
     public ResponseEntity<Map<String, String>> handleNotFound(NotFoundException exception) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", exception.getMessage()));
+    }
+
+    @ExceptionHandler(DuplicateSentenceException.class)
+    public ResponseEntity<Map<String, Object>> handleDuplicateSentence(DuplicateSentenceException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "error", exception.getMessage(),
+                "existingIn", exception.getExistingListNames()
+        ));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

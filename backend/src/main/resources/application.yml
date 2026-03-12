@@ -2,7 +2,8 @@ server:
   port: 8080
   servlet:
     session:
-      timeout: 6h
+      # Session timeout (user stays logged in). Use seconds so it's applied reliably.
+      timeout: 21600  # 6 hours
 
 spring:
   datasource:
@@ -23,4 +24,6 @@ spring:
 app:
   cors:
     allowed-origin: http://localhost:5173
+  # Frontend base URL for password reset links in email (no trailing slash)
+  frontend-url: http://localhost:5173
   # Grammar check uses local LanguageTool (no API key needed)

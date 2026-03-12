@@ -11,14 +11,16 @@ import java.util.stream.Collectors;
 public interface SentenceReviewRepository extends JpaRepository<SentenceReview, Long> {
     long countBySentenceId(Long sentenceId);
 
+    long countBySentence_IdAndUser_Id(Long sentenceId, Long userId);
+
     @Query("select sr.sentence.id, count(sr.id) from SentenceReview sr where sr.user.id = :userId group by sr.sentence.id")
     java.util.List<Object[]> countReviewsBySentenceForUser(@Param("userId") Long userId);
 
     default Map<Long, Long> countReviewsBySentenceForUserAsMap(Long userId) {
         return countReviewsBySentenceForUser(userId).stream()
                 .collect(Collectors.toMap(
-                        row -> (Long) row[0],
-                        row -> (Long) row[1]
+                        row -> ((Number) row[0]).longValue(),
+                        row -> ((Number) row[1]).longValue()
                 ));
     }
 }

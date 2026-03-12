@@ -2,6 +2,7 @@ package com.englishapp.api;
 
 import com.englishapp.service.CurrentUserService;
 import com.englishapp.service.ListSentenceService;
+import com.englishapp.service.SentenceVideoLinkService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -16,10 +17,12 @@ import java.util.Map;
 public class ListSentenceController {
     private final CurrentUserService currentUserService;
     private final ListSentenceService listSentenceService;
+    private final SentenceVideoLinkService sentenceVideoLinkService;
 
-    public ListSentenceController(CurrentUserService currentUserService, ListSentenceService listSentenceService) {
+    public ListSentenceController(CurrentUserService currentUserService, ListSentenceService listSentenceService, SentenceVideoLinkService sentenceVideoLinkService) {
         this.currentUserService = currentUserService;
         this.listSentenceService = listSentenceService;
+        this.sentenceVideoLinkService = sentenceVideoLinkService;
     }
 
     @GetMapping("/lists")
@@ -41,6 +44,11 @@ public class ListSentenceController {
     public ResponseEntity<Void> deleteList(@PathVariable Long listId) {
         listSentenceService.deleteList(currentUserService.getCurrentUserId(), listId);
         return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/sentences/search")
+    public List<Map<String, Object>> searchSentences(@RequestParam String q) {
+        return listSentenceService.searchSentences(currentUserService.getCurrentUserId(), q);
     }
 
     @GetMapping("/lists/{listId}/sentences")
@@ -81,6 +89,28 @@ public class ListSentenceController {
         );
     }
 
+    @GetMapping("/sentences/{sentenceId}/video-links")
+    public List<Map<String, Object>> getVideoLinks(@PathVariable Long sentenceId) {
+        return sentenceVideoLinkService.getVideoLinks(currentUserService.getCurrentUserId(), sentenceId);
+    }
+
+    @PostMapping("/sentences/{sentenceId}/video-links")
+    public Map<String, Object> addVideoLink(@PathVariable Long sentenceId, @RequestBody @Valid VideoLinkRequest request) {
+        return sentenceVideoLinkService.addVideoLink(
+                currentUserService.getCurrentUserId(),
+                sentenceId,
+                request.url(),
+                request.timeCodeSeconds(),
+                request.label()
+        );
+    }
+
+    @DeleteMapping("/sentences/{sentenceId}/video-links/{linkId}")
+    public ResponseEntity<Void> deleteVideoLink(@PathVariable Long sentenceId, @PathVariable Long linkId) {
+        sentenceVideoLinkService.deleteVideoLink(currentUserService.getCurrentUserId(), linkId);
+        return ResponseEntity.noContent().build();
+    }
+
     public record ListRequest(@NotBlank String name) {
     }
 
@@ -88,5 +118,8 @@ public class ListSentenceController {
     }
 
     public record MoveSentenceRequest(@NotNull Long targetListId) {
+    }
+
+    public record VideoLinkRequest(@NotBlank String url, Integer timeCodeSeconds, String label) {
     }
 }
