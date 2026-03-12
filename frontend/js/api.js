@@ -18,7 +18,9 @@ async function request(path, options = {}) {
     }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(data.error || "Request failed");
+        const err = new Error(data.error || "Request failed");
+        err.responseData = data;
+        throw err;
     }
     return data;
 }
@@ -28,12 +30,15 @@ export const api = {
     login: (payload) => request("/auth/login", { method: "POST", body: JSON.stringify(payload) }),
     logout: () => request("/auth/logout", { method: "POST" }),
     me: () => request("/auth/me"),
+    forgotPassword: (payload) => request("/auth/forgot-password", { method: "POST", body: JSON.stringify(payload) }),
+    resetPassword: (payload) => request("/auth/reset-password", { method: "POST", body: JSON.stringify(payload) }),
 
     getLists: () => request("/lists"),
     createList: (payload) => request("/lists", { method: "POST", body: JSON.stringify(payload) }),
     renameList: (id, payload) => request(`/lists/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
     deleteList: (id) => request(`/lists/${id}`, { method: "DELETE" }),
 
+    searchSentences: (q) => request(`/sentences/search?q=${encodeURIComponent(q)}`),
     getSentences: (listId) => request(`/lists/${listId}/sentences`),
     getSentencesPage: (listId, page, size = 20) =>
         request(`/lists/${listId}/sentences?page=${page}&size=${size}`),
@@ -41,6 +46,10 @@ export const api = {
     editSentence: (id, payload) => request(`/sentences/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
     deleteSentence: (id) => request(`/sentences/${id}`, { method: "DELETE" }),
     moveSentence: (id, payload) => request(`/sentences/${id}/move`, { method: "POST", body: JSON.stringify(payload) }),
+
+    getSentenceVideoLinks: (sentenceId) => request(`/sentences/${sentenceId}/video-links`),
+    addSentenceVideoLink: (sentenceId, payload) => request(`/sentences/${sentenceId}/video-links`, { method: "POST", body: JSON.stringify(payload) }),
+    deleteSentenceVideoLink: (sentenceId, linkId) => request(`/sentences/${sentenceId}/video-links/${linkId}`, { method: "DELETE" }),
 
     getSchedule: (sentenceId) => request(`/sentences/${sentenceId}/schedule`),
     updateSchedule: (sentenceId, payload) => request(`/sentences/${sentenceId}/schedule`, { method: "PUT", body: JSON.stringify(payload) }),

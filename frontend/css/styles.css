@@ -48,6 +48,91 @@ body {
     flex: 1;
 }
 
+/* TTS progress bar (waiting for speech) */
+.tts-progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    z-index: 1002;
+    background: rgba(168, 150, 255, 0.2);
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+.tts-progress-bar.is-active {
+    opacity: 1;
+}
+
+.tts-progress-bar-inner {
+    height: 100%;
+    width: 40%;
+    background: rgb(125, 99, 255);
+    border-radius: 0 2px 2px 0;
+    animation: tts-progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes tts-progress-slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(350%); }
+}
+
+/* TTS loading: sentence-item becomes a progress bar (left-to-right fill, success green) */
+.sentence-item.tts-loading,
+.sentence-item.tts-done,
+.review-sentence-item.tts-loading,
+.review-sentence-item.tts-done {
+    position: relative;
+    overflow: hidden;
+}
+
+.sentence-item.tts-loading::before,
+.sentence-item.tts-done::before,
+.review-sentence-item.tts-loading::before,
+.review-sentence-item.tts-done::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 0;
+    background: rgb(86, 214, 122);
+    border-radius: 8px;
+    pointer-events: none;
+}
+
+.sentence-item.tts-loading::before,
+.review-sentence-item.tts-loading::before {
+    width: 0;
+    animation: tts-sentence-fill 2.8s ease-out forwards;
+}
+
+.sentence-item.tts-done::before,
+.review-sentence-item.tts-done::before {
+    width: 100%;
+    transition: opacity 0.25s ease-out;
+}
+
+.sentence-item.tts-loading .sentence-item-content,
+.sentence-item.tts-loading .sentence-item-meta,
+.sentence-item.tts-loading .sentence-actions,
+.sentence-item.tts-done .sentence-item-content,
+.sentence-item.tts-done .sentence-item-meta,
+.sentence-item.tts-done .sentence-actions,
+.review-sentence-item.tts-loading .review-sentence-main,
+.review-sentence-item.tts-done .review-sentence-main {
+    position: relative;
+    z-index: 1;
+}
+
+@keyframes tts-sentence-fill {
+    from { width: 0; }
+    to { width: 100%; }
+}
+
 .container {
     max-width: 1100px;
     margin: 0 auto;
@@ -190,6 +275,16 @@ select.input-soft {
     padding-right: 40px;
 }
 
+.sentence-list {
+    transition: none;
+}
+
+/* During morph: existing items slide down from above */
+.sentence-list.sentence-list-morphing .sentence-item:not(.sentence-item-morph-target) {
+    transform: translateY(calc(-1 * var(--morph-item-height, 0)));
+    transition: transform 0.45s ease-out;
+}
+
 .sentence-list-sentinel {
     min-height: 1px;
     pointer-events: none;
@@ -221,6 +316,7 @@ select.input-soft {
     min-height: 0;
     display: flex;
     flex-direction: column;
+    touch-action: none;
 }
 
 .mind-map-zoom-controls {
@@ -345,6 +441,15 @@ select.input-soft {
         min-height: 44px;
         font-size: 16px;
     }
+
+    #useNaturalTtsInput {
+        width: 1.25rem;
+        height: 1.25rem;
+        min-width: 1.25rem;
+        min-height: 1.25rem;
+        max-width: 1.25rem;
+        max-height: 1.25rem;
+    }
 }
 
 .card {
@@ -394,7 +499,7 @@ select.input-soft {
     flex: 0 0 30%;
     min-width: 0;
     display: flex;
-    justify-content: flex-end;
+    justify-content: center;
     gap: 8px;
 }
 
@@ -410,7 +515,7 @@ select.input-soft {
     .pending-review-actions {
         flex: 0 0 auto;
         width: 100%;
-        justify-content: flex-end;
+        justify-content: center;
     }
 }
 
@@ -455,6 +560,47 @@ button.secondary {
 
 #logoutBtn:active {
     background: rgb(125, 99, 255);
+}
+
+#saveSettingsBtn {
+    transition: background 0.2s ease, transform 0.15s ease;
+}
+
+#saveSettingsBtn:active {
+    background: rgb(168, 150, 255);
+    transform: scale(0.98);
+}
+
+/* Settings panel: consistent spacing and centered buttons */
+.settings-panel .settings-button-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 1rem;
+}
+
+.settings-panel .settings-button-row.review-reminders-row {
+    margin-top: 0.5rem;
+}
+
+.settings-panel .settings-actions {
+    margin-top: 1.25rem;
+}
+
+.review-reminders-row {
+    justify-content: center;
+}
+
+#enableReviewRemindersBtn {
+    background: rgb(125, 99, 255);
+    padding-top: 16px;
+    padding-bottom: 16px;
+}
+
+#enableReviewRemindersBtn:active {
+    background: rgb(168, 150, 255);
 }
 
 button.danger {
@@ -517,6 +663,37 @@ li {
 .sentence-item.is-adding {
     transform: translateX(-24px);
     opacity: 0;
+}
+
+/* Hidden while morph clone is animating from input to list */
+.sentence-item.sentence-item-morph-target {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Morph clone: flies from add-sentence input to the new list item (no overshoot to avoid overflow) */
+.sentence-morph-clone {
+    position: fixed;
+    z-index: 1001;
+    margin: 0;
+    padding: 14px 18px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 1.05rem;
+    line-height: 1.45;
+    border: none;
+    border-radius: 12px;
+    background: #fff;
+    color: #1d2433;
+    box-shadow: 0 0 0 2px rgb(125, 99, 255);
+    overflow: hidden;
+    pointer-events: none;
+    box-sizing: border-box;
+    transition: top 0.45s ease-out,
+                left 0.45s ease-out,
+                width 0.45s ease-out,
+                height 0.45s ease-out,
+                border-radius 0.45s ease,
+                box-shadow 0.45s ease;
 }
 
 .sentence-item .sentence-item-content {
@@ -587,6 +764,7 @@ li {
 }
 
 .sentence-action-popup input[type="text"],
+.sentence-action-popup input[type="url"],
 .sentence-action-popup input[type="number"],
 .sentence-action-popup select,
 .sentence-action-popup textarea {
@@ -630,6 +808,59 @@ li {
 
 .sentence-action-popup .move-list-option:hover {
     background: rgb(200, 188, 255);
+}
+
+.sentence-action-popup .video-links-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 12px 0;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.sentence-action-popup .video-link-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid #e2e7f0;
+}
+
+.sentence-action-popup .video-link-item:last-child {
+    border-bottom: none;
+}
+
+.sentence-action-popup .video-link-open {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgb(99, 102, 241);
+    text-decoration: none;
+}
+
+.sentence-action-popup .video-link-open:hover {
+    text-decoration: underline;
+}
+
+.sentence-action-popup .video-link-add {
+    margin-bottom: 12px;
+}
+
+.sentence-action-popup .video-link-add label {
+    display: block;
+    margin-top: 8px;
+    margin-bottom: 2px;
+}
+
+.sentence-action-popup .video-link-add input[type="url"],
+.sentence-action-popup .video-link-add input[type="number"],
+.sentence-action-popup .video-link-add input[type="text"] {
+    margin-bottom: 4px;
+}
+
+.sentence-action-popup .popup-add-video-link {
+    margin-top: 8px;
 }
 
 .list-action-popup-backdrop .list-delete-message {
@@ -713,6 +944,40 @@ button.show-lists-btn:active,
     border-radius: 12px;
 }
 
+.global-search-row {
+    margin-bottom: 0.75rem;
+}
+
+.global-search-results {
+    margin-bottom: 1rem;
+}
+
+.global-search-result-list {
+    list-style: none;
+    padding: 0;
+    margin: 0.25rem 0 0;
+}
+
+.global-search-result-item {
+    padding: 8px 10px;
+    margin: 4px 0;
+    border: 1px solid #e2e7f0;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.global-search-result-item:hover,
+.global-search-result-item:focus {
+    border-color: rgb(125, 99, 255);
+    background: rgb(248, 246, 255);
+    outline: none;
+}
+
+.global-search-result-content {
+    font-size: 1rem;
+    line-height: 1.4;
+}
+
 .list-item {
     display: flex;
     align-items: flex-start;
@@ -778,9 +1043,74 @@ button.show-lists-btn:active,
     flex: 1;
 }
 
+.checkbox-label {
+    flex: 0 0 auto;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.5rem;
+    width: 100%;
+    max-width: 100%;
+}
+
+#useNaturalTtsInput {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1.25rem;
+    height: 1.25rem;
+    min-width: 1.25rem;
+    min-height: 1.25rem;
+    max-width: 1.25rem;
+    max-height: 1.25rem;
+    border-radius: 6px;
+    border: 2px solid rgb(168, 150, 255);
+    background: #fff;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+#useNaturalTtsInput:hover {
+    border-color: rgb(125, 99, 255);
+}
+
+#useNaturalTtsInput:checked {
+    background: rgb(168, 150, 255);
+    border-color: rgb(168, 150, 255);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M2 6l3 3 5-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+#useNaturalTtsInput:focus {
+    outline: 2px solid rgb(168, 150, 255);
+    outline-offset: 2px;
+}
+
 .hint {
     font-size: 12px;
     color: #586173;
+}
+
+.auth-message {
+    font-size: 13px;
+    color: #2d3748;
+    margin: 0.5rem 0;
+}
+
+.auth-footer {
+    margin-top: 1rem;
+    font-size: 13px;
+}
+
+.auth-footer a {
+    color: #5b21b6;
+    text-decoration: none;
+}
+
+.auth-footer a:hover {
+    text-decoration: underline;
 }
 
 .mind-map-section {
@@ -835,12 +1165,22 @@ button.show-lists-btn:active,
     max-width: 720px;
     opacity: 0;
     transform: scale(0.94);
-    transition: opacity 0.35s ease-out, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .review-session-page.review-session-open {
     opacity: 1;
     transform: scale(1);
+}
+
+.review-session-page.review-session-completing {
+    opacity: 0;
+    transform: scale(0.94);
+    box-shadow: 0 0 0 4px rgba(86, 214, 122, 0.5);
+    pointer-events: none;
+}
+
+.review-session-page {
+    transition: opacity 0.35s ease-out, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.35s ease-out;
 }
 
 .review-session-page h2 {
@@ -864,6 +1204,11 @@ button.show-lists-btn:active,
     gap: 10px;
 }
 
+.review-sentence-item.review-sentence-item-completed {
+    background: rgb(86, 214, 122);
+    border-color: rgb(66, 194, 102);
+}
+
 .review-sentence-main {
     display: flex;
     align-items: center;
@@ -885,6 +1230,82 @@ button.show-lists-btn:active,
 .review-sentence-item .review-speak,
 .review-sentence-item .review-speak-check {
     flex-shrink: 0;
+}
+
+.review-speak-check.stage-1 {
+    background: rgb(220, 212, 255);
+    border-color: rgb(125, 99, 255);
+    color: rgb(125, 99, 255);
+}
+
+.review-speak-check.stage-2 {
+    background: rgb(254, 215, 170);
+    border-color: rgb(234, 88, 12);
+    color: rgb(194, 65, 12);
+}
+
+.review-speak-check.stage-3 {
+    background: rgb(254, 178, 178);
+    border-color: rgb(185, 28, 28);
+    color: rgb(153, 27, 27);
+}
+
+.test-review-speak-check.stage-1 {
+    background: rgb(220, 212, 255);
+    border-color: rgb(125, 99, 255);
+    color: rgb(125, 99, 255);
+}
+
+.test-review-speak-check.stage-2 {
+    background: rgb(254, 215, 170);
+    border-color: rgb(234, 88, 12);
+    color: rgb(194, 65, 12);
+}
+
+.test-review-speak-check.stage-3 {
+    background: rgb(254, 178, 178);
+    border-color: rgb(185, 28, 28);
+    color: rgb(153, 27, 27);
+}
+
+.review-hidden-word {
+    display: inline-block;
+    min-width: 0.6em;
+    height: 1em;
+    margin: 0 1px;
+    background: rgb(125, 99, 255);
+    border-radius: 2px;
+    vertical-align: middle;
+    animation: review-hidden-word-fade 2s ease-in-out infinite;
+}
+
+@keyframes review-hidden-word-fade {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.review-skip-stage {
+    display: block;
+    margin-top: 8px;
+    padding: 8px 14px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #fff;
+    background: rgb(125, 99, 255);
+    border: 1px solid rgb(105, 79, 235);
+    border-radius: 6px;
+    cursor: pointer;
+    animation: review-skip-stage-fade 1.5s ease-in-out infinite;
+}
+
+.review-skip-stage:hover {
+    background: rgb(105, 79, 235);
+    border-color: rgb(85, 59, 215);
+}
+
+@keyframes review-skip-stage-fade {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
 }
 
 .review-voice-result {
@@ -935,6 +1356,7 @@ button.show-lists-btn:active,
 .review-session-actions {
     margin-top: 1.5em;
     gap: 12px;
+    justify-content: center;
 }
 
 .review-session-actions button {
