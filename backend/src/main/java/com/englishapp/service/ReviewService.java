@@ -10,6 +10,8 @@ import java.util.*;
 
 @Service
 public class ReviewService {
+    private static final int MAX_SENTENCES_PER_REVIEW_SESSION = 5;
+
     private final SentenceRepository sentenceRepository;
     private final ScheduleTemplateRepository scheduleTemplateRepository;
     private final SentenceReviewRepository sentenceReviewRepository;
@@ -79,33 +81,40 @@ public class ReviewService {
         }
 
         for (Map.Entry<Instant, List<DueSentence>> entry : grouped.entrySet()) {
-            ReviewSession session = new ReviewSession();
-            session.setUser(user);
-            session.setStartAt(entry.getKey());
-            session.setEndAt(entry.getKey().plus(Duration.ofMinutes(mergeWindow)));
-            session.setStatus(ReviewSessionStatus.PENDING);
-            session = reviewSessionRepository.save(session);
+            List<DueSentence> inBucket = entry.getValue();
+            Instant windowStart = entry.getKey();
+            for (int offset = 0; offset < inBucket.size(); offset += MAX_SENTENCES_PER_REVIEW_SESSION) {
+                int end = Math.min(offset + MAX_SENTENCES_PER_REVIEW_SESSION, inBucket.size());
+                List<DueSentence> chunk = inBucket.subList(offset, end);
 
-            for (DueSentence dueSentence : entry.getValue()) {
-                ReviewSessionItem item = new ReviewSessionItem();
-                item.setReviewSession(session);
-                item.setSentence(dueSentence.sentence());
-                item.setDueAt(dueSentence.dueAt());
-                reviewSessionItemRepository.save(item);
+                ReviewSession session = new ReviewSession();
+                session.setUser(user);
+                session.setStartAt(windowStart);
+                session.setEndAt(windowStart.plus(Duration.ofMinutes(mergeWindow)));
+                session.setStatus(ReviewSessionStatus.PENDING);
+                session = reviewSessionRepository.save(session);
+
+                for (DueSentence dueSentence : chunk) {
+                    ReviewSessionItem item = new ReviewSessionItem();
+                    item.setReviewSession(session);
+                    item.setSentence(dueSentence.sentence());
+                    item.setDueAt(dueSentence.dueAt());
+                    reviewSessionItemRepository.save(item);
+                }
+
+                ReviewNotification notification = new ReviewNotification();
+                notification.setUser(user);
+                notification.setReviewSession(session);
+                notification.setRead(false);
+                reviewNotificationRepository.save(notification);
             }
-
-            ReviewNotification notification = new ReviewNotification();
-            notification.setUser(user);
-            notification.setReviewSession(session);
-            notification.setRead(false);
-            reviewNotificationRepository.save(notification);
         }
     }
 
     @Transactional(readOnly = true)
     public List<Map<String, Object>> pendingSessions(UserAccount user) {
         List<ReviewSession> sessions = reviewSessionRepository
-                .findByUserIdAndStatusOrderByStartAtAsc(user.getId(), ReviewSessionStatus.PENDING);
+                .findByUserIdAndStatusOrderByStartAtAscIdAsc(user.getId(), ReviewSessionStatus.PENDING);
         Instant now = Instant.now();
         return sessions.stream().map(session -> {
             List<Map<String, Object>> items = reviewSessionItemRepository.findByReviewSessionId(session.getId()).stream()
