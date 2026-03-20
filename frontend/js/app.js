@@ -1350,12 +1350,22 @@ function renderReviewSessionPage() {
       </section>
     `;
 
+//    document.getElementById("reviewSessionBackBtn").addEventListener("click", () => {
+//        state.view = "dashboard";
+//        state.openSessionId = null;
+//        state.openSession = null;
+//        renderApp();
+//    });
+
     document.getElementById("reviewSessionBackBtn").addEventListener("click", () => {
-        state.view = "dashboard";
-        state.openSessionId = null;
-        state.openSession = null;
-        renderApp();
-    });
+                showBackToDashboardConfirmPopup(0, async () => {
+                    state.view = "dashboard";
+                    state.openSessionId = null;
+                    state.openSession = null;
+                    renderApp();
+                });
+            });
+        });
 
     document.getElementById("reviewSessionCompleteBtn").addEventListener("click", async () => {
         const sessionPage = appEl.querySelector(".review-session-page");
@@ -1473,6 +1483,12 @@ function normalizeForComparison(text) {
     return normalizeNumberWordsToDigits(cleaned);
 }
 
+function isSafariOrAppleWebKit() {
+    if (typeof navigator === "undefined") return false;
+    return (navigator.vendor && navigator.vendor.indexOf("Apple") > -1) ||
+        (/Safari/i.test(navigator.userAgent) && !/Chrome|Chromium/i.test(navigator.userAgent));
+}
+
 function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     if (!expectedContent || !resultEl || !buttonEl) return;
 
@@ -1485,17 +1501,29 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     resultEl.textContent = "";
     resultEl.className = "review-voice-result review-voice-listening";
     resultEl.style.display = "block";
-    resultEl.textContent = "Listening… Speak the sentence.";
+    const isSafari = isSafariOrAppleWebKit();
+    resultEl.textContent = isSafari ? "Preparing… Speak in 2…" : "Listening… Speak the sentence.";
     buttonEl.disabled = true;
 
     const expected = normalizeForComparison(expectedContent);
     const recognition = new SpeechRecognition();
     recognition.lang = "en-US";
     recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 3;
+
+    let warmupTimeouts = [];
+    const clearWarmup = () => {
+        warmupTimeouts.forEach((t) => clearTimeout(t));
+        warmupTimeouts = [];
+    };
 
     const stopRecognition = () => {
+        clearWarmup();
         try {
+            if (isSafariOrAppleWebKit()) {
+                try { recognition.start(); } catch (_) { /* ignore */ }
+            }
             recognition.stop();
         } catch (_) { /* already stopped */ }
     };
@@ -1506,10 +1534,33 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     };
 
     recognition.onresult = (event) => {
+        const results = event.results;
+        let result = null;
+        for (let i = results.length - 1; i >= 0; i--) {
+            if (results[i].isFinal) {
+                result = results[i];
+                break;
+            }
+        }
+        if (!result) return;
         stopRecognition();
-        const transcript = (event.results[0] && event.results[0][0]) ? event.results[0][0].transcript : "";
-        const said = normalizeForComparison(transcript);
-        const match = expected === said;
+        let transcript = "";
+        let match = false;
+        for (let i = 0; i < result.length; i++) {
+            const alt = result[i] && result[i].transcript;
+            if (alt) {
+                if (i === 0) transcript = alt;
+                if (normalizeForComparison(alt) === expected) {
+                    match = true;
+                    if (!transcript) transcript = alt;
+                    break;
+                }
+            }
+        }
+        if (!match && transcript) {
+            const said = normalizeForComparison(transcript);
+            match = expected === said;
+        }
 
         resultEl.className = "review-voice-result " + (match ? "review-voice-match" : "review-voice-mismatch");
         if (match) {
@@ -1538,6 +1589,14 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
 
     try {
         recognition.start();
+        if (isSafari) {
+            warmupTimeouts.push(setTimeout(() => {
+                if (resultEl.classList.contains("review-voice-listening")) resultEl.textContent = "Preparing… 1…";
+            }, 1000));
+            warmupTimeouts.push(setTimeout(() => {
+                if (resultEl.classList.contains("review-voice-listening")) resultEl.textContent = "Now speak the sentence.";
+            }, 2000));
+        }
     } catch (e) {
         resultEl.className = "review-voice-result review-voice-mismatch";
         resultEl.textContent = "Could not start voice recognition: " + (e.message || "unknown error");
@@ -2826,6 +2885,51 @@ async function renderMindMap() {
 
     const label = document.getElementById("mindMapZoomLabel");
     if (label) label.textContent = Math.round(state.mindMapScale * 100) + "%";
+}
+
+let backToDashboardConfirmEl = null;
+
+function showBackToDashboardConfirmPopup(sessionId, onConfirm) {
+    if (!backToDashboardConfirmEl) {
+        backToDashboardConfirmEl = document.createElement("div");
+        backToDashboardConfirmEl.className = "sentence-action-popup-backdrop mark-reviewed-confirm-backdrop";
+        backToDashboardConfirmEl.innerHTML = `
+          <div class="review-action-popup mark-reviewed-confirm-popup">
+            <h4>Mark as reviewed</h4>
+            <p class="mark-reviewed-confirm-message">Are you sure you want to back to the reviews? The current progress will be lost</p>
+            <div class="popup-actions">
+              <button type="button" class="secondary popup-cancel">Cancel</button>
+              <button type="button" class="popup-confirm back-to-dashboard-confirm-btn">Back to dashboard</button>
+            </div>
+          </div>
+        `;
+        backToDashboardConfirmEl.addEventListener("click", (e) => {
+            if (e.target === backToDashboardConfirmEl) closeBackToDashboardConfirmPopup();
+        });
+        document.body.appendChild(markReviewedConfirmEl);
+    }
+    const popup = backToDashboardConfirmEl.querySelector(".mark-reviewed-confirm-popup");
+    const cancelBtn = popup.querySelector(".popup-cancel");
+    const confirmBtn = popup.querySelector(".mark-reviewed-confirm-btn");
+    cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+    confirmBtn.replaceWith(confirmBtn.cloneNode(true));
+    const newCancel = popup.querySelector(".popup-cancel");
+    const newConfirm = popup.querySelector(".mark-reviewed-confirm-btn");
+    newCancel.addEventListener("click", () => closeMarkReviewedConfirmPopup());
+    newConfirm.addEventListener("click", () => {
+        closeMarkReviewedConfirmPopup();
+        onConfirm();
+    });
+    backToDashboardConfirmEl.classList.add("is-visible");
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => backToDashboardConfirmEl.classList.add("is-open"));
+    });
+}
+
+function closeBackToDashboardConfirmPopup() {
+    if (!backToDashboardConfirmEl) return;
+    backToDashboardConfirmEl.classList.remove("is-open");
+    setTimeout(() => backToDashboardConfirmEl.classList.remove("is-visible"), 320);
 }
 
 bootstrap();
