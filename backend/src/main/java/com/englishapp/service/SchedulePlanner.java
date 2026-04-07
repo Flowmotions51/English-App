@@ -42,7 +42,7 @@ public final class SchedulePlanner {
         } else if (scheduleTemplate.isOpenEnded()) {
             int lastOffset = steps.get(steps.size() - 1).getOffsetMinutes();
             long weeklyStep = occurrenceIndex - steps.size() + 1;
-            dueAt = createdAt.plus(Duration.ofMinutes(lastOffset)).plus(Duration.ofDays(7L * weeklyStep));
+            dueAt = createdAt.plus(Duration.ofMinutes(lastOffset)).plus(Duration.ofDays(28L * weeklyStep));
         } else {
             return null;
         }

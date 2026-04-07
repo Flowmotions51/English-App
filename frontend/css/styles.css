@@ -893,6 +893,22 @@ li {
     line-height: 1.5;
 }
 
+/* Back to dashboard (leave review session): same backdrop, dimmer, and scale/opacity transition as mark-reviewed confirm */
+.mark-reviewed-confirm-backdrop .sentence-action-popup.back-to-dashboard-confirm-popup {
+    /* Inherits .sentence-action-popup (card, shadow, padding) + .mark-reviewed-confirm-popup animation rules above */
+    max-width: min(400px, 92vw);
+}
+
+.mark-reviewed-confirm-backdrop .sentence-action-popup.back-to-dashboard-confirm-popup .popup-actions {
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.mark-reviewed-confirm-backdrop .sentence-action-popup.back-to-dashboard-confirm-popup .back-to-dashboard-confirm-btn {
+    flex: 1 1 auto;
+    min-width: min(160px, 100%);
+}
+
 .grammar-result-popup .grammar-result-title {
     margin: 0 0 8px 0;
     font-size: 1.1rem;

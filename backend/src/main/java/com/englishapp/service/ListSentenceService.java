@@ -23,6 +23,7 @@ public class ListSentenceService {
     private final SentenceReviewRepository sentenceReviewRepository;
     private final ScheduleService scheduleService;
 
+
     public ListSentenceService(
             SentenceListRepository sentenceListRepository,
             SentenceRepository sentenceRepository,
@@ -36,13 +37,14 @@ public class ListSentenceService {
     }
 
     public List<Map<String, Object>> getLists(Long userId) {
-        return sentenceListRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+        return sentenceListRepository.findByUserIdOrderByUpdatedAtDesc(userId).stream()
                 .map(list -> {
                     long sentenceCount = sentenceRepository.countBySentenceList_IdAndSentenceList_User_Id(list.getId(), userId);
                     return Map.<String, Object>of(
                             "id", list.getId(),
                             "name", list.getName(),
                             "createdAt", list.getCreatedAt(),
+                            "updatedAt", list.getUpdatedAt(),
                             "sentenceCount", sentenceCount
                     );
                 })
@@ -55,15 +57,18 @@ public class ListSentenceService {
         list.setUser(user);
         list.setName(name);
         list.setCreatedAt(Instant.now());
+        list.setUpdatedAt(Instant.now());
         list = sentenceListRepository.save(list);
-        return Map.<String, Object>of("id", list.getId(), "name", list.getName(), "createdAt", list.getCreatedAt());
+        return Map.<String, Object>of("id", list.getId(), "name", list.getName(),
+                "createdAt", list.getCreatedAt(), "updatedAt", list.getUpdatedAt());
     }
 
     @Transactional
     public Map<String, Object> renameList(Long userId, Long listId, String newName) {
         SentenceList list = getListByUser(listId, userId);
         list.setName(newName);
-        return Map.<String, Object>of("id", list.getId(), "name", list.getName(), "createdAt", list.getCreatedAt());
+        return Map.<String, Object>of("id", list.getId(), "name", list.getName(),
+                "createdAt", list.getCreatedAt(), "updatedAt", list.getUpdatedAt());
     }
 
     @Transactional
@@ -93,6 +98,8 @@ public class ListSentenceService {
         return Map.<String, Object>of("content", content, "hasMore", hasMore);
     }
 
+
+    @Transactional
     public List<Map<String, Object>> searchSentences(Long userId, String query) {
         if (query == null || query.trim().isEmpty()) {
             return List.of();
@@ -136,9 +143,13 @@ public class ListSentenceService {
         Sentence sentence = new Sentence();
         sentence.setSentenceList(list);
         sentence.setContent(content);
-        sentence.setCreatedAt(Instant.now());
+        Instant now = Instant.now();
+        sentence.setCreatedAt(now);
         sentence = sentenceRepository.save(sentence);
         scheduleService.createDefaultSchedule(sentence);
+        //updating sentence_list updated_at
+        SentenceList listByUser = getListByUser(listId, userId);
+        listByUser.setUpdatedAt(now);
         return sentencePayload(sentence, 0L);
     }
 

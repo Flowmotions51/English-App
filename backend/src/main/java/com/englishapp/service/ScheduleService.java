@@ -17,7 +17,7 @@ import java.util.Map;
 
 @Service
 public class ScheduleService {
-    public static final List<Integer> DEFAULT_STEPS_MINUTES = List.of(60, 180, 360, 1440, 2880, 10080);
+    public static final List<Integer> DEFAULT_STEPS_MINUTES = List.of(1440, 2880, 10080, 40320);
 
     private final ScheduleTemplateRepository scheduleTemplateRepository;
     private final EntityManager entityManager;

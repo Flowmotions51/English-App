@@ -1,7 +1,22 @@
-const effectiveHost = window.location.hostname === "0.0.0.0"
-    ? "localhost"
-    : window.location.hostname;
-const API_BASE = `${window.location.protocol}//${effectiveHost}:8080/api`;
+function defaultApiBase() {
+    const effectiveHost = window.location.hostname === "0.0.0.0"
+        ? "localhost"
+        : window.location.hostname;
+    return `${window.location.protocol}//${effectiveHost}:8080/api`;
+}
+
+// Optional override: set `window.__ENGLISH_APP_API_BASE__` in an inline (classic) script in index.html
+// before `app.js` loads — e.g. from a launch script that injects the backend URL. Value must include
+// the `/api` path, e.g. "http://127.0.0.1:8080/api" (no trailing slash required).
+function resolveApiBase() {
+    const override = typeof window !== "undefined" && window.__ENGLISH_APP_API_BASE__;
+    if (typeof override === "string" && override.trim() !== "") {
+        return override.trim().replace(/\/$/, "");
+    }
+    return defaultApiBase();
+}
+
+const API_BASE = resolveApiBase();
 
 async function request(path, options = {}) {
     const response = await fetch(`${API_BASE}${path}`, {

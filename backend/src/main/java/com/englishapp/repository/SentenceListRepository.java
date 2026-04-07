@@ -7,6 +7,6 @@ import java.util.List;
 import java.util.Optional;
 
 public interface SentenceListRepository extends JpaRepository<SentenceList, Long> {
-    List<SentenceList> findByUserIdOrderByCreatedAtDesc(Long userId);
+    List<SentenceList> findByUserIdOrderByUpdatedAtDesc(Long userId);
     Optional<SentenceList> findByIdAndUserId(Long id, Long userId);
 }

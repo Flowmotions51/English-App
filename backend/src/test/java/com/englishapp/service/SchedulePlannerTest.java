@@ -29,13 +29,13 @@ class SchedulePlannerTest {
     }
 
     @Test
-    void openEndedOccurrenceShouldRepeatWeeklyAfterBasePattern() {
+    void openEndedOccurrenceShouldRepeatEveryFourWeeksAfterBasePattern() {
         ScheduleTemplate template = template(List.of(60, 180, 360), true, null);
         Instant createdAt = Instant.parse("2026-02-24T00:00:00Z");
 
         Instant dueAt = SchedulePlanner.occurrenceAt(template, createdAt, 3);
 
-        assertEquals(Instant.parse("2026-03-03T06:00:00Z"), dueAt);
+        assertEquals(Instant.parse("2026-03-24T06:00:00Z"), dueAt);
     }
 
     @Test

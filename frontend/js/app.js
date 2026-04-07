@@ -701,11 +701,11 @@ function showSentenceActionPopup(action, sentenceId, data) {
         });
     } else if (action === "schedule") {
         const s = data || {};
-        const intervals = (s.intervalMinutes || [60, 180, 360, 1440, 2880, 10080]).join(", ");
+        const intervals = (s.intervalMinutes || [1440, 2880, 10080, 40320]).join(", ");
         popup.innerHTML = `
             <h4>📅 Schedule</h4>
             <label>Intervals (minutes, comma-separated)</label>
-            <input type="text" id="sentencePopupIntervals" value="${escapeHtml(intervals)}" placeholder="60, 180, 360, 1440, 2880, 10080" />
+            <input type="text" id="sentencePopupIntervals" value="${escapeHtml(intervals)}" placeholder="1440, 2880, 10080, 40320" />
             <label><input type="checkbox" id="sentencePopupOpenEnded" ${s.openEnded ? "checked" : ""} /> Open-ended weekly after final step</label>
             <label>End date (YYYY-MM-DD, optional)</label>
             <input type="text" id="sentencePopupEndDate" value="${escapeHtml(s.endDate || "")}" placeholder="Leave blank for none" />
@@ -1055,7 +1055,7 @@ function renderApp() {
                 <div class="row list-search-row">
                   <input id="listSearchInput" type="search" class="input-soft" placeholder="Search in list…" value="${escapeHtml(state.listSearchQuery || "")}" autocomplete="off" />
                 </div>
-                <div class="hint">New sentences are auto-scheduled by default pattern (1h, 3h, 6h, 1d, 2d, 1w).</div>
+                <div class="hint">New sentences are auto-scheduled by default pattern (1d, 2d, 1w, 4w).</div>
                 <ul class="sentence-list">
                   ${(() => {
                     const q = (state.listSearchQuery || "").trim().toLowerCase();
@@ -1350,22 +1350,14 @@ function renderReviewSessionPage() {
       </section>
     `;
 
-//    document.getElementById("reviewSessionBackBtn").addEventListener("click", () => {
-//        state.view = "dashboard";
-//        state.openSessionId = null;
-//        state.openSession = null;
-//        renderApp();
-//    });
-
     document.getElementById("reviewSessionBackBtn").addEventListener("click", () => {
-                showBackToDashboardConfirmPopup(0, async () => {
-                    state.view = "dashboard";
-                    state.openSessionId = null;
-                    state.openSession = null;
-                    renderApp();
-                });
-            });
+        showBackToDashboardConfirmPopup(0, async () => {
+            state.view = "dashboard";
+            state.openSessionId = null;
+            state.openSession = null;
+            renderApp();
         });
+    });
 
     document.getElementById("reviewSessionCompleteBtn").addEventListener("click", async () => {
         const sessionPage = appEl.querySelector(".review-session-page");
@@ -1954,6 +1946,7 @@ function bindDashboardActions() {
             state.globalSearchQuery = "";
             state.globalSearchResults = [];
             await refreshAndRender();
+            await scrollToSentence(sentenceId);
         });
         el.addEventListener("keydown", (e) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -2116,6 +2109,32 @@ async function loadMoreSentences() {
         state.sentencesLoading = false;
         notify(e.message || "Failed to load more.");
     }
+}
+
+async function scrollToSentence(sentenceId) {
+    const el = document.querySelector(`.sentence-item[data-sentence-id="${sentenceId}"]`);
+    if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+    }
+    let needsRerender = false;
+    state.sentencesLoading = true;
+    try {
+        while (state.sentencesHasMore) {
+            const data = await api.getSentencesPage(state.selectedListId, state.sentencesPage + 1, 20);
+            const newItems = data.content || [];
+            state.sentences = [...state.sentences, ...newItems];
+            state.sentencesPage++;
+            state.sentencesHasMore = data.hasMore === true;
+            needsRerender = true;
+            if (newItems.some((s) => s.id === sentenceId)) break;
+        }
+    } finally {
+        state.sentencesLoading = false;
+    }
+    if (needsRerender) renderApp();
+    const found = document.querySelector(`.sentence-item[data-sentence-id="${sentenceId}"]`);
+    if (found) found.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function refreshAndRender() {
@@ -2601,7 +2620,7 @@ async function renderMindMap() {
                 state.openedListFromMindMap = true;
                 state.restoreMindMapFullscreen = !!state.mindMapFullscreenParent;
                 closeMindMapFullscreen();
-                refreshAndRender();
+                refreshAndRender().then(() => scrollToSentence(node.id));
             }
             state.draggingNodeId = null;
             document.removeEventListener("mousemove", moveHandler);
@@ -2848,7 +2867,7 @@ async function renderMindMap() {
         state.openedListFromMindMap = true;
         state.restoreMindMapFullscreen = !!state.mindMapFullscreenParent;
         closeMindMapFullscreen();
-        refreshAndRender();
+        refreshAndRender().then(() => scrollToSentence(node.id));
     });
 
     canvas.style.cursor = "grab";
@@ -2894,9 +2913,9 @@ function showBackToDashboardConfirmPopup(sessionId, onConfirm) {
         backToDashboardConfirmEl = document.createElement("div");
         backToDashboardConfirmEl.className = "sentence-action-popup-backdrop mark-reviewed-confirm-backdrop";
         backToDashboardConfirmEl.innerHTML = `
-          <div class="review-action-popup mark-reviewed-confirm-popup">
-            <h4>Mark as reviewed</h4>
-            <p class="mark-reviewed-confirm-message">Are you sure you want to back to the reviews? The current progress will be lost</p>
+          <div class="sentence-action-popup mark-reviewed-confirm-popup back-to-dashboard-confirm-popup">
+            <h4>Back to dashboard?</h4>
+            <p class="mark-reviewed-confirm-message">You’ll leave this review session. Unsaved progress on this page will be lost.</p>
             <div class="popup-actions">
               <button type="button" class="secondary popup-cancel">Cancel</button>
               <button type="button" class="popup-confirm back-to-dashboard-confirm-btn">Back to dashboard</button>
@@ -2906,18 +2925,18 @@ function showBackToDashboardConfirmPopup(sessionId, onConfirm) {
         backToDashboardConfirmEl.addEventListener("click", (e) => {
             if (e.target === backToDashboardConfirmEl) closeBackToDashboardConfirmPopup();
         });
-        document.body.appendChild(markReviewedConfirmEl);
+        document.body.appendChild(backToDashboardConfirmEl);
     }
     const popup = backToDashboardConfirmEl.querySelector(".mark-reviewed-confirm-popup");
     const cancelBtn = popup.querySelector(".popup-cancel");
-    const confirmBtn = popup.querySelector(".mark-reviewed-confirm-btn");
+    const confirmBtn = popup.querySelector(".back-to-dashboard-confirm-btn");
     cancelBtn.replaceWith(cancelBtn.cloneNode(true));
     confirmBtn.replaceWith(confirmBtn.cloneNode(true));
     const newCancel = popup.querySelector(".popup-cancel");
-    const newConfirm = popup.querySelector(".mark-reviewed-confirm-btn");
-    newCancel.addEventListener("click", () => closeMarkReviewedConfirmPopup());
+    const newConfirm = popup.querySelector(".back-to-dashboard-confirm-btn");
+    newCancel.addEventListener("click", () => closeBackToDashboardConfirmPopup());
     newConfirm.addEventListener("click", () => {
-        closeMarkReviewedConfirmPopup();
+        closeBackToDashboardConfirmPopup();
         onConfirm();
     });
     backToDashboardConfirmEl.classList.add("is-visible");

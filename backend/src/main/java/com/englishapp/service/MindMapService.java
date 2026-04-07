@@ -50,7 +50,7 @@ public class MindMapService {
     }
 
     public Map<String, Object> getAllMindMap(Long userId) {
-        List<SentenceList> lists = sentenceListRepository.findByUserIdOrderByCreatedAtDesc(userId);
+        List<SentenceList> lists = sentenceListRepository.findByUserIdOrderByUpdatedAtDesc(userId);
         Map<Long, Long> reviewCountBySentence = sentenceReviewRepository.countReviewsBySentenceForUserAsMap(userId);
         List<Map<String, Object>> nodes = new ArrayList<>();
 
