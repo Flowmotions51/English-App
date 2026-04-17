@@ -36,7 +36,8 @@ public class GrammarCheckService {
         String normalized = text
                 .replace('\u2019', '\'')   // right single quotation mark (curly apostrophe)
                 .replace('\u2018', '\'')   // left single quotation mark
-                .replace('`', '\'');
+                .replace('`', '\'')
+                .replace(",", "");
         return normalized.toLowerCase();
     }
 

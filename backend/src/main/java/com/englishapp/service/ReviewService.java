@@ -10,7 +10,7 @@ import java.util.*;
 
 @Service
 public class ReviewService {
-    private static final int MAX_SENTENCES_PER_REVIEW_SESSION = 5;
+    private static final int MAX_SENTENCES_PER_REVIEW_SESSION = 15;
 
     private final SentenceRepository sentenceRepository;
     private final ScheduleTemplateRepository scheduleTemplateRepository;
