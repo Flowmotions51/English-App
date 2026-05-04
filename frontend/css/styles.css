@@ -1248,6 +1248,11 @@ button.show-lists-btn:active,
     flex-shrink: 0;
 }
 
+.review-sentence-item .review-edit,
+.review-sentence-item .review-edit {
+    flex-shrink: 0;
+}
+
 .review-speak-check.stage-1 {
     background: rgb(220, 212, 255);
     border-color: rgb(125, 99, 255);

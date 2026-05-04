@@ -629,8 +629,10 @@ function showSentenceActionPopup(action, sentenceId, data) {
     }
 
     const popup = sentenceActionPopupEl.querySelector(".sentence-action-popup");
-    const sentence = state.sentences.find((s) => s.id === sentenceId);
-
+    var sentence = state.sentences.find((s) => s.id === sentenceId);
+    if (!sentence) {
+        sentence = data
+    }
     if (action === "edit") {
         popup.innerHTML = `
             <h4>✏️ Edit sentence</h4>
@@ -1335,6 +1337,7 @@ function renderReviewSessionPage() {
               <div class="review-sentence-main">
                 <div class="review-sentence-content">${renderSentenceWithWordLinks(item.content)}</div>
                 <div class="review-sentence-buttons">
+                  <button type="button" class="btn-icon secondary review-edit" data-review-edit-idx="${idx}" title="Edit">✏</button>
                   <button type="button" class="btn-icon secondary review-speak" data-review-speak-idx="${idx}" title="Listen">🔊</button>
                   <button type="button" class="btn-icon secondary review-speak-check stage-1" data-review-speak-check-idx="${idx}" title="Speak and check (stage 1: full sentence)">🎤</button>
                 </div>
@@ -1422,6 +1425,59 @@ function renderReviewSessionPage() {
         button.addEventListener("click", () => {
             const idx = parseInt(button.getAttribute("data-review-speak-check-idx"), 10);
             startReviewVoiceCheck(session, idx);
+        });
+    });
+
+    document.querySelectorAll("[data-review-edit-idx]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const idx = parseInt(button.getAttribute("data-review-edit-idx"), 10);
+            const sentenceId = session.items[idx].sentenceId
+            const sentence = session.items[idx].content;
+            if (!sentence) return;
+            if (!sentenceId) return;
+            if (!sentenceActionPopupEl) {
+                sentenceActionPopupEl = document.createElement("div");
+                sentenceActionPopupEl.className = "sentence-action-popup-backdrop";
+                sentenceActionPopupEl.innerHTML = '<div class="sentence-action-popup"></div>';
+                sentenceActionPopupEl.querySelector(".sentence-action-popup").style.left = "50%";
+                sentenceActionPopupEl.querySelector(".sentence-action-popup").style.top = "50%";
+                sentenceActionPopupEl.querySelector(".sentence-action-popup").style.transform = "translate(-50%, -50%)";
+                sentenceActionPopupEl.addEventListener("click", (e) => {
+                    if (e.target === sentenceActionPopupEl) closeSentenceActionPopup();
+                });
+                document.body.appendChild(sentenceActionPopupEl);
+            }
+        
+            const popup = sentenceActionPopupEl.querySelector(".sentence-action-popup");
+            popup.innerHTML = `
+                <h4>✏️ Edit sentence</h4>
+                <textarea id="sentencePopupEditInput" rows="3">${escapeHtml(sentence)}</textarea>
+                <div class="popup-actions">
+                    <button type="button" class="secondary popup-cancel">Cancel</button>
+                    <button type="button" class="popup-save">Save</button>
+                </div>
+            `;
+            popup.querySelector(".popup-cancel").addEventListener("click", closeSentenceActionPopup);
+            popup.querySelector(".popup-save").addEventListener("click", async () => {
+                const content = popup.querySelector("#sentencePopupEditInput").value.trim();
+                if (!content) return;
+                try {
+                    await api.editSentence(sentenceId, { content });
+                } catch (e) {
+                    notify(e.message || "Failed to save sentence.");
+                    return;
+                }
+                closeSentenceActionPopup();
+                session.items[idx].content = content;
+                const row = appEl.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
+                const voiceEl = row?.querySelector(`.review-voice-result[data-review-voice-idx="${idx}"]`);
+                if (voiceEl) {
+                    voiceEl.className = "review-voice-result";
+                    voiceEl.innerHTML = "";
+                }
+                await updateReviewItemStageDisplay(session, idx);
+            });
+            sentenceActionPopupEl.classList.add("is-open");
         });
     });
 

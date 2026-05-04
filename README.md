@@ -79,3 +79,9 @@ Includes schedule algorithm tests for:
 - weekly merge day behavior
 - open-ended weekly continuation
 - end-date cutoff
+
+### Run in EC2 :
+Front end :
+cd frontend
+export ENGLISH_APP_API_BASE=https://repeat-every-day.com/api -> NO PORT! Should go to 443 bu default (see nginx config)
+nohup python3 serve.py 5173 > outputPython.log 2>&1 &
