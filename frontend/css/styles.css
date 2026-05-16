@@ -158,6 +158,11 @@ body {
     gap: 4px;
     margin-bottom: 16px;
     flex-wrap: wrap;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgb(168, 150, 255);
+    padding: 6px 0 10px;
 }
 
 .dashboard-tab {
@@ -1486,6 +1491,25 @@ button.show-lists-btn:active,
 }
 
 @media (max-width: 768px) {
+    .dashboard-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .dashboard-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    .dashboard-tabs .dashboard-tab {
+        flex: 0 0 auto;
+        white-space: nowrap;
+        min-height: 40px;
+        padding: 8px 10px;
+        font-size: 0.9rem;
+    }
+
     .btn-icon {
         min-width: 48px;
         min-height: 48px;

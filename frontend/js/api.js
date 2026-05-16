@@ -70,6 +70,8 @@ export const api = {
     updateSchedule: (sentenceId, payload) => request(`/sentences/${sentenceId}/schedule`, { method: "PUT", body: JSON.stringify(payload) }),
 
     getPendingReviews: () => request("/reviews/pending"),
+    /** Rebuilds pending review sessions from schedules; call before getPendingReviews when entering the app. */
+    refreshReviewSessions: () => request("/reviews/refresh-sessions", { method: "POST" }),
     openReviewSession: (id) => request(`/reviews/sessions/${id}/open`, { method: "POST" }),
     completeReviewSession: (id) => request(`/reviews/sessions/${id}/complete`, { method: "POST" }),
 

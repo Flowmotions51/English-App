@@ -320,7 +320,7 @@ async function bootstrap() {
 
     try {
         state.user = await api.me();
-        await loadAppData();
+        await loadAppData({ refreshReviewSessions: true });
         renderApp();
         showReviewDueNotificationIfNeeded();
         // Preload natural TTS only if user has enabled it
@@ -330,8 +330,12 @@ async function bootstrap() {
     }
 }
 
-async function loadAppData() {
+async function loadAppData(options = {}) {
+    const { refreshReviewSessions = false } = options;
     state.lists = await api.getLists();
+    if (refreshReviewSessions) {
+        await api.refreshReviewSessions();
+    }
     state.pendingSessions = await api.getPendingReviews();
     state.settings = await api.getSettings();
     if (state.selectedListId) {
@@ -998,7 +1002,7 @@ async function authAction(type) {
             await api.register({ email, password });
         }
         state.user = await api.login({ email, password });
-        await loadAppData();
+        await loadAppData({ refreshReviewSessions: true });
         renderApp();
     } catch (error) {
         notify(error.message);

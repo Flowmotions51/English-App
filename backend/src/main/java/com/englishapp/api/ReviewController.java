@@ -23,8 +23,13 @@ public class ReviewController {
     @GetMapping("/pending")
     public List<Map<String, Object>> pendingReviews() {
         UserAccount user = currentUserService.getCurrentUser();
-        reviewService.refreshPendingSessions(user);
         return reviewService.pendingSessions(user);
+    }
+
+    @PostMapping("/refresh-sessions")
+    public void refreshReviews() {
+        UserAccount user = currentUserService.getCurrentUser();
+        reviewService.refreshPendingSessions(user);
     }
 
     @PostMapping("/sessions/{sessionId}/open")
