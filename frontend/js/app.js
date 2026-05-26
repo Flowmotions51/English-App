@@ -1,6 +1,9 @@
 import { api } from "./api.js?v=2";
 import { speak, preload as preloadTTS, getUseNaturalTts, setUseNaturalTts, getIsKokoroSupported } from "./tts.js";
 
+/** Mind map UI disabled until feature is ready. */
+const MIND_MAP_ENABLED = false;
+
 if (window.location.hostname === "0.0.0.0") {
     const normalized = `${window.location.protocol}//localhost:${window.location.port}${window.location.pathname}${window.location.search}${window.location.hash}`;
     window.location.replace(normalized);
@@ -27,6 +30,8 @@ const state = {
     globalSearchQuery: "",
     globalSearchResults: [],
     globalSearchDebounce: null,
+    globalSearchLoading: false,
+    globalSearchRequestId: 0,
     sentencesPage: 0,
     sentencesHasMore: false,
     sentencesLoading: false,
@@ -304,7 +309,113 @@ async function lookupWord(wordOrPhrase, fallbackWord = null) {
     }
 }
 
+const GLOBAL_SEARCH_DEBOUNCE_MS = 200;
+
+function buildGlobalSearchResultsHtml() {
+    const q = (state.globalSearchQuery || "").trim();
+    if (!q) return "";
+    if (state.globalSearchLoading) {
+        return `<div class="hint global-search-status" aria-live="polite">Searching…</div>`;
+    }
+    const results = state.globalSearchResults || [];
+    if (!results.length) {
+        return `<div class="hint global-search-status" aria-live="polite">No results</div>`;
+    }
+    return html`
+      <div class="hint">${results.length} result${results.length === 1 ? "" : "s"}</div>
+      <ul class="global-search-result-list">
+        ${results.map((r) => html`
+          <li class="global-search-result-item" data-search-list-id="${r.listId}" data-search-sentence-id="${r.id}" role="button" tabindex="0">
+            <div class="global-search-result-content">${renderSentenceWithWordLinks(r.content)}</div>
+            <div class="hint">in ${escapeHtml(r.listName || "")}${(r.reviewCount != null && r.reviewCount > 0) ? ` · Reviewed ${r.reviewCount} time${r.reviewCount === 1 ? "" : "s"}` : ""}</div>
+          </li>
+        `).join("")}
+      </ul>
+    `;
+}
+
+function syncGlobalSearchResultsDom() {
+    const container = document.getElementById("globalSearchResults");
+    if (!container) return;
+    const q = (state.globalSearchQuery || "").trim();
+    const show = q.length > 0;
+    container.hidden = !show;
+    container.setAttribute("aria-busy", state.globalSearchLoading ? "true" : "false");
+    container.innerHTML = show ? buildGlobalSearchResultsHtml() : "";
+}
+
+function handleGlobalSearchInput(inputEl) {
+    state.globalSearchQuery = inputEl.value;
+    const q = state.globalSearchQuery.trim();
+    if (state.globalSearchDebounce) clearTimeout(state.globalSearchDebounce);
+    if (!q) {
+        state.globalSearchResults = [];
+        state.globalSearchLoading = false;
+        state.globalSearchRequestId += 1;
+        syncGlobalSearchResultsDom();
+        return;
+    }
+    state.globalSearchLoading = true;
+    syncGlobalSearchResultsDom();
+    state.globalSearchDebounce = setTimeout(async () => {
+        state.globalSearchDebounce = null;
+        const requestId = ++state.globalSearchRequestId;
+        const queryAtFetch = q;
+        try {
+            const results = await api.searchSentences(queryAtFetch);
+            if (requestId !== state.globalSearchRequestId) return;
+            if ((state.globalSearchQuery || "").trim() !== queryAtFetch) return;
+            state.globalSearchResults = results;
+        } catch {
+            if (requestId !== state.globalSearchRequestId) return;
+            state.globalSearchResults = [];
+        } finally {
+            if (requestId === state.globalSearchRequestId) {
+                state.globalSearchLoading = false;
+                syncGlobalSearchResultsDom();
+            }
+        }
+    }, GLOBAL_SEARCH_DEBOUNCE_MS);
+}
+
+async function openGlobalSearchResult(listId, sentenceId) {
+    if (!listId || !sentenceId) return;
+    state.openedListFromMindMap = false;
+    state.selectedListId = listId;
+    state.selectedSentenceId = sentenceId;
+    state.globalSearchQuery = "";
+    state.globalSearchResults = [];
+    state.globalSearchLoading = false;
+    state.globalSearchRequestId += 1;
+    if (state.globalSearchDebounce) {
+        clearTimeout(state.globalSearchDebounce);
+        state.globalSearchDebounce = null;
+    }
+    await refreshAndRender();
+    await scrollToSentence(sentenceId);
+}
+
 async function bootstrap() {
+    appEl.addEventListener("input", (e) => {
+        if (e.target.id !== "globalSearchInput") return;
+        handleGlobalSearchInput(e.target);
+    });
+    appEl.addEventListener("click", (e) => {
+        const item = e.target.closest(".global-search-result-item");
+        if (!item) return;
+        const listId = Number(item.getAttribute("data-search-list-id"));
+        const sentenceId = Number(item.getAttribute("data-search-sentence-id"));
+        openGlobalSearchResult(listId, sentenceId);
+    });
+    appEl.addEventListener("keydown", (e) => {
+        const item = e.target.closest(".global-search-result-item");
+        if (!item || (e.key !== "Enter" && e.key !== " ")) return;
+        e.preventDefault();
+        const listId = Number(item.getAttribute("data-search-list-id"));
+        const sentenceId = Number(item.getAttribute("data-search-sentence-id"));
+        openGlobalSearchResult(listId, sentenceId);
+    });
+
     document.addEventListener("click", (e) => {
         const span = e.target.closest(".dict-word");
         if (!span) return;
@@ -336,7 +447,10 @@ async function loadAppData(options = {}) {
     if (refreshReviewSessions) {
         await api.refreshReviewSessions();
     }
-    state.pendingSessions = await api.getPendingReviews();
+    const { includePendingReviews = true } = options;
+    if (includePendingReviews) {
+        state.pendingSessions = await api.getPendingReviews();
+    }
     state.settings = await api.getSettings();
     if (state.selectedListId) {
         const data = await api.getSentencesPage(state.selectedListId, 0, 20);
@@ -700,9 +814,36 @@ function showSentenceActionPopup(action, sentenceId, data) {
         popup.querySelector(".popup-cancel").addEventListener("click", closeSentenceActionPopup);
         popup.querySelectorAll(".move-list-option").forEach((btn) => {
             btn.addEventListener("click", async () => {
-                await api.moveSentence(sentenceId, { targetListId: Number(btn.getAttribute("data-list-id")) });
+                const targetListId = Number(btn.getAttribute("data-list-id"));
+                try {
+                    await api.moveSentence(sentenceId, { targetListId });
+                } catch (e) {
+                    notify(e.message || "Failed to move sentence.");
+                    return;
+                }
                 closeSentenceActionPopup();
-                await refreshAndRender();
+                const sourceList = state.lists.find((l) => l.id === state.selectedListId);
+                const targetList = state.lists.find((l) => l.id === targetListId);
+                if (sourceList) {
+                    sourceList.sentenceCount = Math.max(0, (Number(sourceList.sentenceCount) || 0) - 1);
+                }
+                if (targetList) {
+                    targetList.sentenceCount = (Number(targetList.sentenceCount) || 0) + 1;
+                }
+                const sentenceCard = document.querySelector(`.sentence-item[data-sentence-id="${sentenceId}"]`);
+                if (sentenceCard) {
+                    state.sentences = state.sentences.filter((s) => s.id !== sentenceId);
+                    if (state.selectedSentenceId === sentenceId) state.selectedSentenceId = null;
+                    sentenceCard.classList.add("is-completing");
+                    sentenceCard.addEventListener("transitionend", function onEnd(e) {
+                        if (e.target !== sentenceCard || e.propertyName !== "max-height") return;
+                        sentenceCard.removeEventListener("transitionend", onEnd);
+                        sentenceCard.remove();
+                        redrawMindMapCanvas();
+                    });
+                } else {
+                    await refreshAndRender();
+                }
             });
         });
     } else if (action === "schedule") {
@@ -877,6 +1018,7 @@ function clearResetHash() {
 }
 
 function renderAuth() {
+    removeScrollJumpControls();
     const resetToken = getResetTokenFromHash();
     userBarEl.innerHTML = "";
 
@@ -1022,6 +1164,116 @@ function renderUserBar() {
     });
 }
 
+function shouldShowScrollJumpControls() {
+    if (state.view === "reviewSession" && state.openSession) return true;
+    if (state.view !== "dashboard") return false;
+    if (state.selectedListId) return true;
+    return state.currentSection === 0 || state.currentSection === 1;
+}
+
+let scrollJumpOnScroll = null;
+let scrollJumpOnResize = null;
+
+function removeScrollJumpControls() {
+    unbindScrollJumpScrollSync();
+    document.getElementById("scrollJumpControls")?.remove();
+}
+
+function updateScrollJumpPosition() {
+    const wrap = document.getElementById("scrollJumpControls");
+    if (!wrap) return;
+
+    const root = document.scrollingElement || document.documentElement;
+    const scrollTop = root.scrollTop;
+    const maxScroll = Math.max(0, root.scrollHeight - window.innerHeight);
+    const threshold = 40;
+    const atTop = scrollTop <= threshold;
+    const atBottom = maxScroll > threshold && scrollTop >= maxScroll - threshold;
+
+    wrap.classList.toggle("is-at-page-top", atTop);
+    wrap.classList.toggle("is-at-page-bottom", atBottom);
+
+    if (atBottom && !atTop) {
+        const bottomInset = parseFloat(getComputedStyle(wrap).bottom) || 16;
+        const topInset = bottomInset;
+        const travel = -(window.innerHeight - wrap.offsetHeight - topInset - bottomInset);
+        wrap.style.setProperty("--scroll-jump-y", `${travel}px`);
+    } else {
+        wrap.style.setProperty("--scroll-jump-y", "0px");
+    }
+}
+
+function bindScrollJumpScrollSync() {
+    unbindScrollJumpScrollSync();
+    if (!document.getElementById("scrollJumpControls")) return;
+
+    scrollJumpOnScroll = updateScrollJumpPosition;
+    scrollJumpOnResize = updateScrollJumpPosition;
+    window.addEventListener("scroll", scrollJumpOnScroll, { passive: true });
+    window.addEventListener("resize", scrollJumpOnResize, { passive: true });
+    updateScrollJumpPosition();
+}
+
+function unbindScrollJumpScrollSync() {
+    if (scrollJumpOnScroll) {
+        window.removeEventListener("scroll", scrollJumpOnScroll);
+        scrollJumpOnScroll = null;
+    }
+    if (scrollJumpOnResize) {
+        window.removeEventListener("resize", scrollJumpOnResize);
+        scrollJumpOnResize = null;
+    }
+}
+
+function mountScrollJumpControls() {
+    removeScrollJumpControls();
+    if (!shouldShowScrollJumpControls()) return;
+
+    const wrap = document.createElement("div");
+    wrap.id = "scrollJumpControls";
+    wrap.className = "scroll-jump-controls";
+    wrap.setAttribute("aria-label", "Scroll shortcuts");
+
+    const topBtn = document.createElement("button");
+    topBtn.type = "button";
+    topBtn.className = "btn-icon secondary scroll-jump-top";
+    topBtn.title = "Scroll to top";
+    topBtn.setAttribute("aria-label", "Scroll to top");
+    topBtn.textContent = "↑";
+
+    const bottomBtn = document.createElement("button");
+    bottomBtn.type = "button";
+    bottomBtn.className = "btn-icon secondary scroll-jump-bottom";
+    bottomBtn.title = "Scroll to bottom";
+    bottomBtn.setAttribute("aria-label", "Scroll to bottom");
+    bottomBtn.textContent = "↓";
+
+    topBtn.addEventListener("click", () => scrollJumpTo("top"));
+    bottomBtn.addEventListener("click", () => scrollJumpTo("bottom"));
+
+    wrap.append(topBtn, bottomBtn);
+    document.body.appendChild(wrap);
+    bindScrollJumpScrollSync();
+}
+
+function updateScrollJumpControlsVisibility() {
+    if (shouldShowScrollJumpControls()) {
+        if (!document.getElementById("scrollJumpControls")) {
+            mountScrollJumpControls();
+        } else {
+            bindScrollJumpScrollSync();
+        }
+    } else {
+        removeScrollJumpControls();
+    }
+}
+
+function scrollJumpTo(edge) {
+    const root = document.scrollingElement || document.documentElement;
+    const top = edge === "top" ? 0 : Math.max(0, root.scrollHeight - window.innerHeight);
+    window.scrollTo({ top, behavior: "smooth" });
+}
+
 function renderApp() {
     renderUserBar();
     if (state.view === "reviewSession" && state.openSession) {
@@ -1035,23 +1287,19 @@ function renderApp() {
     appEl.innerHTML = html`
       <section class="dashboard container">
         ${!state.selectedListId ? html`
-        <div class="dashboard-tabs" role="tablist">
-          <button type="button" class="dashboard-tab ${state.currentSection === 0 ? "active" : ""}" data-section="0" role="tab">Lists</button>
-          <button type="button" class="dashboard-tab ${state.currentSection === 1 ? "active" : ""}" data-section="1" role="tab">Reviews</button>
-          <button type="button" class="dashboard-tab ${state.currentSection === 2 ? "active" : ""}" data-section="2" role="tab">Settings</button>
-          <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
-          <div class="mind-map-zoom-controls mind-map-tabs-controls" style="display: ${state.currentSection === 3 ? "flex" : "none"}">
-            <button type="button" id="mindMapZoomOut" class="btn-icon secondary" title="Zoom out">−</button>
-            <span class="mind-map-zoom-label" id="mindMapZoomLabel">100%</span>
-            <button type="button" id="mindMapZoomIn" class="btn-icon secondary" title="Zoom in">+</button>
-            <button type="button" id="mindMapFullscreen" class="btn-icon secondary" title="Full screen">⛶</button>
+        <div class="dashboard-tabs">
+          <div class="dashboard-tabs-inner" role="tablist">
+            <button type="button" class="dashboard-tab ${state.currentSection === 0 ? "active" : ""}" data-section="0" role="tab">Lists</button>
+            <button type="button" class="dashboard-tab ${state.currentSection === 1 ? "active" : ""}" data-section="1" role="tab">Reviews</button>
+            <button type="button" class="dashboard-tab ${state.currentSection === 2 ? "active" : ""}" data-section="2" role="tab">Settings</button>
+            <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
           </div>
         </div>
         ` : ""}
         <div class="dashboard-content">
           ${state.selectedListId ? html`
             <div class="dashboard-list-detail card">
-              <button type="button" id="showListsBtn" class="show-lists-btn secondary">${state.openedListFromMindMap ? "← Mind Map" : "← Lists"}</button>
+              <button type="button" id="showListsBtn" class="show-lists-btn secondary">← Lists</button>
               <h2 class="dashboard-content-title">${selectedList ? escapeHtml(selectedList.name) : ""}</h2>
               ${selectedList ? html`
                 <div class="row add-sentence-row">
@@ -1095,19 +1343,7 @@ function renderApp() {
               <div class="row global-search-row">
                 <input id="globalSearchInput" type="search" class="input-soft" placeholder="Search sentences in all lists…" value="${escapeHtml(state.globalSearchQuery || "")}" autocomplete="off" />
               </div>
-              ${(state.globalSearchResults && state.globalSearchResults.length > 0) ? html`
-                <div class="global-search-results">
-                  <div class="hint">${state.globalSearchResults.length} result${state.globalSearchResults.length === 1 ? "" : "s"}</div>
-                  <ul class="global-search-result-list">
-                    ${state.globalSearchResults.map((r) => html`
-                      <li class="global-search-result-item" data-search-list-id="${r.listId}" data-search-sentence-id="${r.id}" role="button" tabindex="0">
-                        <div class="global-search-result-content">${renderSentenceWithWordLinks(r.content)}</div>
-                        <div class="hint">in ${escapeHtml(r.listName || "")}${(r.reviewCount != null && r.reviewCount > 0) ? ` · Reviewed ${r.reviewCount} time${r.reviewCount === 1 ? "" : "s"}` : ""}</div>
-                      </li>
-                    `).join("")}
-                  </ul>
-                </div>
-              ` : ""}
+              <div id="globalSearchResults" class="global-search-results" hidden></div>
               <div class="row">
                 <input id="newListName" class="input-soft" placeholder="New list name" />
                 <button id="createListBtn">Create</button>
@@ -1150,17 +1386,15 @@ function renderApp() {
               </div>
               <div class="row settings-button-row review-reminders-row">
                 <button type="button" id="enableReviewRemindersBtn" class="secondary">Enable review reminders</button>
-                <span class="hint" id="reviewRemindersHint" style="margin-left: 8px;"></span>
+                <span class="hint" id="reviewRemindersHint"></span>
               </div>
               <div class="settings-button-row settings-actions">
                 <button id="saveSettingsBtn">Save settings</button>
               </div>
             </div>
-            <div class="dashboard-panel card mind-map-section" data-section="3" style="display: ${state.currentSection === 3 ? "flex" : "none"}">
-              <h3>Mind Map (all lists)</h3>
-              <div class="mind-map-zoom-wrap">
-                <canvas id="mindMap" width="900" height="480"></canvas>
-              </div>
+            <div class="dashboard-panel card dashboard-coming-soon-panel" data-section="3" style="display: ${state.currentSection === 3 ? "block" : "none"}">
+              <h3>Mind Map</h3>
+              <p class="dashboard-coming-soon">Coming soon</p>
             </div>
           `}
         </div>
@@ -1168,9 +1402,10 @@ function renderApp() {
     `;
 
     bindDashboardActions();
+    syncGlobalSearchResultsDom();
     bindDashboardTabs();
     renderPendingReviews();
-    renderMindMap();
+    if (MIND_MAP_ENABLED) renderMindMap();
 
     if (state.selectedListId && state.justOpenedListId === state.selectedListId) {
         const listDetail = appEl.querySelector(".dashboard-list-detail");
@@ -1268,6 +1503,47 @@ function renderApp() {
             state.savedListScrollY = 0;
         }, 0);
     }
+
+    mountScrollJumpControls();
+}
+
+function navigateBackToLists() {
+    state.selectedListId = null;
+    state.listSearchQuery = "";
+    state.openedListFromMindMap = false;
+    state.restoreMindMapFullscreen = false;
+    state.currentSection = 0;
+    renderApp();
+}
+
+function animateCloseListDetailThen(callback) {
+    const listDetail = document.querySelector(".dashboard-list-detail");
+    if (!listDetail || !listDetail.classList.contains("list-detail-open")) {
+        callback();
+        return;
+    }
+
+    let finished = false;
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        callback();
+    };
+
+    const showListsBtn = document.getElementById("showListsBtn");
+    if (showListsBtn) showListsBtn.disabled = true;
+
+    listDetail.classList.add("list-detail-closing");
+    listDetail.classList.remove("list-detail-open");
+
+    const onEnd = (e) => {
+        if (e.target !== listDetail) return;
+        if (e.propertyName !== "opacity" && e.propertyName !== "transform") return;
+        listDetail.removeEventListener("transitionend", onEnd);
+        finish();
+    };
+    listDetail.addEventListener("transitionend", onEnd);
+    setTimeout(finish, 450);
 }
 
 function bindDashboardTabs() {
@@ -1280,30 +1556,19 @@ function bindDashboardTabs() {
             btn.classList.add("active");
             document.querySelectorAll(".dashboard-panel").forEach((panel) => {
                 const s = parseInt(panel.getAttribute("data-section"), 10);
-                panel.style.display = s === section ? (s === 3 ? "flex" : "block") : "none";
+                panel.style.display = s === section ? "block" : "none";
             });
-            const zoomControls = document.querySelector(".mind-map-tabs-controls");
-            if (zoomControls) zoomControls.style.display = section === 3 ? "flex" : "none";
-            if (section === 3) {
+            if (section === 3 && MIND_MAP_ENABLED) {
                 renderMindMap();
             }
+            updateScrollJumpControlsVisibility();
         });
     });
 
     const showListsBtn = document.getElementById("showListsBtn");
     if (showListsBtn) {
         showListsBtn.addEventListener("click", () => {
-            state.selectedListId = null;
-            state.listSearchQuery = "";
-            const wasFromMindMap = state.openedListFromMindMap;
-            const wasRestoreFullscreen = state.restoreMindMapFullscreen;
-            state.restoreMindMapFullscreen = false;
-            state.openedListFromMindMap = false;
-            state.currentSection = wasFromMindMap ? 3 : 0;
-            renderApp();
-            if (wasRestoreFullscreen) {
-                setTimeout(() => openMindMapFullscreen(), 100);
-            }
+            animateCloseListDetailThen(navigateBackToLists);
         });
     }
 
@@ -1491,6 +1756,8 @@ function renderReviewSessionPage() {
             requestAnimationFrame(() => sessionPage.classList.add("review-session-open"));
         });
     }
+
+    mountScrollJumpControls();
 }
 
 const NUMBER_WORDS = {
@@ -1541,6 +1808,35 @@ function isSafariOrAppleWebKit() {
         (/Safari/i.test(navigator.userAgent) && !/Chrome|Chromium/i.test(navigator.userAgent));
 }
 
+/** Word count for timing heuristics (plain text sentence). */
+function estimateVoiceCheckWordCount(sentenceContent) {
+    return (sentenceContent || "").trim().split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * Max time (ms) to keep listening so longer sentences can be spoken.
+ * Based on assumed speaking rate + read/think buffer, clamped for UX.
+ */
+function estimateVoiceCheckListenBudgetMs(sentenceContent) {
+    const words = estimateVoiceCheckWordCount(sentenceContent);
+    const assumedWpm = 95;
+    const safety = 1.45;
+    const readBaseMs = 1800;
+    const readPerWordMs = 120;
+    const speakMs = (words / assumedWpm) * safety * 60 * 1000;
+    const readMs = readBaseMs + Math.min(words * readPerWordMs, 4500);
+    const total = Math.round(speakMs + readMs);
+    return Math.min(35000, Math.max(5000, total));
+}
+
+/**
+ * Safari/WebKit: longer prep countdown before prompting to speak (mic is already on).
+ */
+function estimateVoiceCheckPrepMs(sentenceContent) {
+    const words = estimateVoiceCheckWordCount(sentenceContent);
+    return Math.round(Math.min(10000, Math.max(2000, 1600 + words * 380)));
+}
+
 function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     if (!expectedContent || !resultEl || !buttonEl) return;
 
@@ -1550,28 +1846,52 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
         return;
     }
 
-    resultEl.textContent = "";
     resultEl.className = "review-voice-result review-voice-listening";
     resultEl.style.display = "block";
     const isSafari = isSafariOrAppleWebKit();
-    resultEl.textContent = isSafari ? "Preparing… Speak in 2…" : "Listening… Speak the sentence.";
+    const prepMs = estimateVoiceCheckPrepMs(expectedContent);
+    const listenBudgetMs = estimateVoiceCheckListenBudgetMs(expectedContent);
+    const prepSeconds = Math.max(1, Math.ceil(prepMs / 1000));
+    const initialListeningHint = isSafari
+        ? `Preparing… Speak in ${prepSeconds}…`
+        : "Listening… Speak the sentence.";
+    resultEl.innerHTML = `<div class="review-voice-listening-row">
+<span class="review-voice-status">${escapeHtml(initialListeningHint)}</span>
+<button type="button" class="secondary review-voice-done" title="Stop listening and check what was heard">Done speaking</button>
+</div>`;
+    const listeningStatusEl = resultEl.querySelector(".review-voice-status");
+    const doneSpeakingBtn = resultEl.querySelector(".review-voice-done");
     buttonEl.disabled = true;
 
     const expected = normalizeForComparison(expectedContent);
     const recognition = new SpeechRecognition();
     recognition.lang = "en-US";
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 3;
 
+    let aggregatedFinalTranscript = "";
+    /** Last final segment from the recognition session (for alternate transcripts when scoring). */
+    let lastFinalSpeechResult = null;
+    let sessionFinalized = false;
     let warmupTimeouts = [];
-    const clearWarmup = () => {
+    let listenCapTimer = null;
+
+    const setListeningHint = (text) => {
+        if (listeningStatusEl) listeningStatusEl.textContent = text;
+    };
+
+    const clearVoiceCheckTimers = () => {
         warmupTimeouts.forEach((t) => clearTimeout(t));
         warmupTimeouts = [];
+        if (listenCapTimer != null) {
+            clearTimeout(listenCapTimer);
+            listenCapTimer = null;
+        }
     };
 
     const stopRecognition = () => {
-        clearWarmup();
+        clearVoiceCheckTimers();
         try {
             if (isSafariOrAppleWebKit()) {
                 try { recognition.start(); } catch (_) { /* ignore */ }
@@ -1585,35 +1905,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
         if (typeof onCheckEnd === "function") onCheckEnd(!!match);
     };
 
-    recognition.onresult = (event) => {
-        const results = event.results;
-        let result = null;
-        for (let i = results.length - 1; i >= 0; i--) {
-            if (results[i].isFinal) {
-                result = results[i];
-                break;
-            }
-        }
-        if (!result) return;
-        stopRecognition();
-        let transcript = "";
-        let match = false;
-        for (let i = 0; i < result.length; i++) {
-            const alt = result[i] && result[i].transcript;
-            if (alt) {
-                if (i === 0) transcript = alt;
-                if (normalizeForComparison(alt) === expected) {
-                    match = true;
-                    if (!transcript) transcript = alt;
-                    break;
-                }
-            }
-        }
-        if (!match && transcript) {
-            const said = normalizeForComparison(transcript);
-            match = expected === said;
-        }
-
+    const applyResultUi = (match, transcript) => {
         resultEl.className = "review-voice-result " + (match ? "review-voice-match" : "review-voice-mismatch");
         if (match) {
             resultEl.innerHTML = "✓ Match! You said it correctly.";
@@ -1623,7 +1915,72 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
         finish(match);
     };
 
+    const finalizeListeningOutcome = () => {
+        if (sessionFinalized) return;
+        if (!resultEl.classList.contains("review-voice-listening")) return;
+        sessionFinalized = true;
+        resultEl.classList.remove("review-voice-listening");
+        stopRecognition();
+        const { match, transcript } = tryMatchFromAggregatedAndLastFinal(lastFinalSpeechResult);
+        applyResultUi(match, transcript);
+    };
+
+    doneSpeakingBtn.addEventListener("click", () => finalizeListeningOutcome());
+
+    const tryMatchFromAggregatedAndLastFinal = (lastFinal) => {
+        const normAgg = normalizeForComparison(aggregatedFinalTranscript);
+        if (normAgg === expected) {
+            return { match: true, transcript: aggregatedFinalTranscript };
+        }
+        let transcript = "";
+        let match = false;
+        if (lastFinal) {
+            for (let i = 0; i < lastFinal.length; i++) {
+                const alt = lastFinal[i] && lastFinal[i].transcript;
+                if (alt) {
+                    if (i === 0) transcript = alt;
+                    if (normalizeForComparison(alt) === expected) {
+                        match = true;
+                        if (!transcript) transcript = alt;
+                        break;
+                    }
+                }
+            }
+            if (!match && transcript) {
+                match = expected === normalizeForComparison(transcript);
+            }
+        }
+        return { match, transcript: transcript || aggregatedFinalTranscript };
+    };
+
+    recognition.onresult = (event) => {
+        const results = event.results;
+        for (let i = event.resultIndex; i < results.length; i++) {
+            const r = results[i];
+            if (r.isFinal) {
+                const piece = r[0] && r[0].transcript;
+                if (piece) aggregatedFinalTranscript += piece + " ";
+            }
+        }
+        let lastFinal = null;
+        for (let i = results.length - 1; i >= 0; i--) {
+            if (results[i].isFinal) {
+                lastFinal = results[i];
+                break;
+            }
+        }
+        if (!lastFinal) return;
+        lastFinalSpeechResult = lastFinal;
+        const { match, transcript } = tryMatchFromAggregatedAndLastFinal(lastFinal);
+        if (!match) return;
+        sessionFinalized = true;
+        resultEl.classList.remove("review-voice-listening");
+        stopRecognition();
+        applyResultUi(true, transcript);
+    };
+
     recognition.onerror = (event) => {
+        sessionFinalized = true;
         stopRecognition();
         resultEl.className = "review-voice-result review-voice-mismatch";
         const msg = event.error === "no-speech" ? "No speech heard. Try again." : (event.error === "not-allowed" ? "Microphone access denied." : `Error: ${event.error}`);
@@ -1633,6 +1990,8 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
 
     recognition.onend = () => {
         if (resultEl.classList.contains("review-voice-listening")) {
+            sessionFinalized = true;
+            clearVoiceCheckTimers();
             resultEl.className = "review-voice-result review-voice-mismatch";
             resultEl.textContent = "Recognition ended. Click 🎤 to try again.";
             finish(false);
@@ -1641,15 +2000,28 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
 
     try {
         recognition.start();
+        const capDelayMs = (isSafari ? prepMs : 0) + listenBudgetMs;
+        listenCapTimer = setTimeout(() => {
+            listenCapTimer = null;
+            finalizeListeningOutcome();
+        }, capDelayMs);
+
         if (isSafari) {
+            const t1 = Math.round(prepMs / 3);
+            const t2 = Math.round((2 * prepMs) / 3);
             warmupTimeouts.push(setTimeout(() => {
-                if (resultEl.classList.contains("review-voice-listening")) resultEl.textContent = "Preparing… 1…";
-            }, 1000));
+                if (resultEl.classList.contains("review-voice-listening")) setListeningHint("Preparing… almost…");
+            }, t1));
             warmupTimeouts.push(setTimeout(() => {
-                if (resultEl.classList.contains("review-voice-listening")) resultEl.textContent = "Now speak the sentence.";
-            }, 2000));
+                if (resultEl.classList.contains("review-voice-listening")) setListeningHint("Preparing… get ready…");
+            }, t2));
+            warmupTimeouts.push(setTimeout(() => {
+                if (resultEl.classList.contains("review-voice-listening")) setListeningHint("Now speak the sentence.");
+            }, prepMs));
         }
     } catch (e) {
+        sessionFinalized = true;
+        clearVoiceCheckTimers();
         resultEl.className = "review-voice-result review-voice-mismatch";
         resultEl.textContent = "Could not start voice recognition: " + (e.message || "unknown error");
         finish(false);
@@ -1920,6 +2292,24 @@ function closeMarkReviewedConfirmPopup() {
 }
 
 function bindDashboardActions() {
+    const scrollWindowToTop = () => {
+        const detail = document.querySelector(".dashboard-list-detail");
+        if (detail) detail.scrollIntoView({ block: "start", inline: "nearest" });
+
+        const root = document.scrollingElement || document.documentElement;
+        const applyTopScroll = () => {
+            window.scrollTo(0, 0);
+            if (root) root.scrollTop = 0;
+            document.documentElement.scrollTop = 0;
+            document.body.scrollTop = 0;
+        };
+
+        applyTopScroll();
+        requestAnimationFrame(() => requestAnimationFrame(applyTopScroll));
+        setTimeout(applyTopScroll, 0);
+        setTimeout(applyTopScroll, 60);
+    };
+
     const createListBtn = document.getElementById("createListBtn");
     if (createListBtn) {
         createListBtn.addEventListener("click", async () => {
@@ -1938,7 +2328,8 @@ function bindDashboardActions() {
             const listId = Number(button.getAttribute("data-list-open"));
             state.selectedListId = listId;
             state.justOpenedListId = listId;
-            await refreshAndRender();
+            await refreshAndRender({ includePendingReviews: false });
+            scrollWindowToTop();
         });
     });
     document.querySelectorAll(".list-item-main").forEach((el) => {
@@ -1950,7 +2341,8 @@ function bindDashboardActions() {
             state.restoreMindMapFullscreen = false;
             state.selectedListId = listId;
             state.justOpenedListId = listId;
-            await refreshAndRender();
+            await refreshAndRender({ includePendingReviews: false });
+            scrollWindowToTop();
         });
         el.addEventListener("keydown", (e) => {
             if (e.key === "Enter" || e.key === " ") {
@@ -1971,48 +2363,6 @@ function bindDashboardActions() {
             const listId = Number(button.getAttribute("data-list-delete"));
             const list = state.lists.find((l) => l.id === listId);
             showListActionPopup("delete", listId, list ? list.name : "");
-        });
-    });
-
-    const globalSearchInput = document.getElementById("globalSearchInput");
-    if (globalSearchInput) {
-        globalSearchInput.addEventListener("input", () => {
-            state.globalSearchQuery = globalSearchInput.value.trim();
-            if (state.globalSearchDebounce) clearTimeout(state.globalSearchDebounce);
-            if (!state.globalSearchQuery) {
-                state.globalSearchResults = [];
-                renderApp();
-                return;
-            }
-            state.globalSearchDebounce = setTimeout(async () => {
-                state.globalSearchDebounce = null;
-                try {
-                    state.globalSearchResults = await api.searchSentences(state.globalSearchQuery);
-                } catch {
-                    state.globalSearchResults = [];
-                }
-                renderApp();
-            }, 300);
-        });
-    }
-    document.querySelectorAll(".global-search-result-item").forEach((el) => {
-        el.addEventListener("click", async () => {
-            const listId = Number(el.getAttribute("data-search-list-id"));
-            const sentenceId = Number(el.getAttribute("data-search-sentence-id"));
-            if (!listId || !sentenceId) return;
-            state.openedListFromMindMap = false;
-            state.selectedListId = listId;
-            state.selectedSentenceId = sentenceId;
-            state.globalSearchQuery = "";
-            state.globalSearchResults = [];
-            await refreshAndRender();
-            await scrollToSentence(sentenceId);
-        });
-        el.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                el.click();
-            }
         });
     });
 
@@ -2197,9 +2547,9 @@ async function scrollToSentence(sentenceId) {
     if (found) found.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-async function refreshAndRender() {
+async function refreshAndRender(options = {}) {
     try {
-        await loadAppData();
+        await loadAppData(options);
         renderApp();
         showReviewDueNotificationIfNeeded();
     } catch (error) {
@@ -2615,6 +2965,7 @@ function openMindMapFullscreen() {
 }
 
 async function renderMindMap() {
+    if (!MIND_MAP_ENABLED) return;
     const canvas = document.getElementById("mindMap");
     if (!canvas) return;
 
