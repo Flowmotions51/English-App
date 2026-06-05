@@ -49,6 +49,7 @@ public class ReviewService {
                 .stream()
                 .collect(HashMap::new, (map, schedule) -> map.put(schedule.getSentence().getId(), schedule), HashMap::putAll);
         Map<Long, Long> reviewCounts = sentenceReviewRepository.countReviewsBySentenceForUserAsMap(user.getId());
+        Map<Long, Instant> lastReviewedAt = sentenceReviewRepository.lastReviewedAtBySentenceForUserAsMap(user.getId());
         List<DueSentence> dueSentences = new ArrayList<>();
         Instant now = Instant.now();
         ZoneId zoneId = parseZone(user.getTimezone());
@@ -59,7 +60,12 @@ public class ReviewService {
                 continue;
             }
             long reviewed = reviewCounts.getOrDefault(sentence.getId(), 0L);
-            Instant dueAt = SchedulePlanner.occurrenceAt(schedule, sentence.getCreatedAt(), reviewed);
+            Instant dueAt = SchedulePlanner.occurrenceAt(
+                    schedule,
+                    sentence.getCreatedAt(),
+                    lastReviewedAt.get(sentence.getId()),
+                    reviewed
+            );
             if (dueAt == null || dueAt.isAfter(now)) {
                 continue;
             }

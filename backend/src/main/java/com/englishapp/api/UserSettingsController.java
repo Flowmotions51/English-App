@@ -7,6 +7,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -32,6 +33,7 @@ public class UserSettingsController {
     public Map<String, Object> updateSettings(@RequestBody @Valid SettingsRequest request) {
         UserAccount user = currentUserService.getCurrentUser();
         user.setTimezone(request.timezone());
+        user.setLanguage(normalizeLanguage(request.language()));
         user.setMergeWindowMinutes(request.mergeWindowMinutes());
         user.setWeeklyReviewDay(request.weeklyReviewDay());
         userAccountRepository.save(user);
@@ -41,13 +43,19 @@ public class UserSettingsController {
     private Map<String, Object> payload(UserAccount user) {
         return Map.of(
                 "timezone", user.getTimezone(),
+                "language", user.getLanguage(),
                 "mergeWindowMinutes", user.getMergeWindowMinutes(),
                 "weeklyReviewDay", user.getWeeklyReviewDay()
         );
     }
 
+    private static String normalizeLanguage(String language) {
+        return "sr".equalsIgnoreCase(language) ? "sr" : "en";
+    }
+
     public record SettingsRequest(
             @NotBlank String timezone,
+            @NotBlank @Pattern(regexp = "en|sr", message = "Language must be en or sr") String language,
             @Min(10) @Max(10080) Integer mergeWindowMinutes,
             @Min(1) @Max(7) Integer weeklyReviewDay
     ) {

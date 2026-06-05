@@ -1,5 +1,6 @@
 import { api } from "./api.js?v=2";
-import { speak, preload as preloadTTS, getUseNaturalTts, setUseNaturalTts, getIsKokoroSupported } from "./tts.js";
+import { speak, preload as preloadTTS, getUseNaturalTts, setUseNaturalTts, setTtsLanguage, getNaturalTtsHint, applyDefaultNaturalTtsForLanguage } from "./tts.js";
+import { getSpeechLocale, normalizeAppLanguage, getLanguageConfig, languagePickerHtml, bindLanguagePicker, getLanguagePickerValue } from "./language.js";
 
 /** Mind map UI disabled until feature is ready. */
 const MIND_MAP_ENABLED = false;
@@ -63,9 +64,11 @@ const state = {
     /** @type {{ [idx: number]: number }} stage 1=full, 2=verbs hidden, 3=all hidden */
     reviewSpeakCheckStage: {},
     testReviewStage: 1,
-    /** 'forgot' | null when on auth screen */
+    /** 'forgot' | 'signup-language' | 'signup-credentials' | null when on auth screen */
     authView: null,
-    authMessage: null
+    authMessage: null,
+    /** Language chosen during sign-up before account creation. */
+    authSignupLanguage: null
 };
 
 const appEl = document.getElementById("app");
@@ -85,6 +88,10 @@ function escapeHtml(text) {
 
 function notify(message) {
     window.alert(message);
+}
+
+function getAppLanguage() {
+    return normalizeAppLanguage(state.user?.language || state.settings?.language || "en");
 }
 
 /** Shown at most once per page load when there are due, unread review sessions. */
@@ -431,11 +438,13 @@ async function bootstrap() {
 
     try {
         state.user = await api.me();
+        setTtsLanguage(getAppLanguage());
+        applyDefaultNaturalTtsForLanguage(getAppLanguage());
         await loadAppData({ refreshReviewSessions: true });
         renderApp();
         showReviewDueNotificationIfNeeded();
         // Preload natural TTS only if user has enabled it
-        if (getUseNaturalTts()) setTimeout(() => preloadTTS(), 1500);
+        if (getUseNaturalTts()) setTimeout(() => preloadTTS(getAppLanguage()), 1500);
     } catch (_error) {
         renderAuth();
     }
@@ -512,7 +521,7 @@ async function sentenceSpeak(id) {
     const itemEl = document.querySelector(`.sentence-item[data-sentence-id="${id}"]`);
     showTtsProgressOnItem(itemEl);
     try {
-        await speak(sentence.content);
+        await speak(sentence.content, getAppLanguage());
     } finally {
         hideTtsProgressOnItem(itemEl);
     }
@@ -625,7 +634,7 @@ async function sentenceGrammar(id) {
     }
     showGrammarResultPopup(false, "", true);
     try {
-        const result = await api.checkGrammar(sentence.content);
+        const result = await api.checkGrammar(sentence.content, getAppLanguage());
         showGrammarResultPopup(!!result.correct, result.feedback || "");
     } catch (e) {
         showGrammarResultPopup(false, e.message || "Grammar check failed.");
@@ -1104,29 +1113,92 @@ function renderAuth() {
         return;
     }
 
-    state.authMessage = null;
+    if (state.authView === "signup-language") {
+        appEl.innerHTML = html`
+            <section class="container card">
+                <h2>Sign up</h2>
+                <p class="hint">Choose the language for this account. You can change it later in Settings.</p>
+                ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
+                <div class="row auth-language-row">
+                    <span class="hint auth-language-label">Learning language</span>
+                    <div id="signupLanguagePicker" class="language-picker" role="listbox" aria-label="Learning language">
+                        ${languagePickerHtml(state.authSignupLanguage || "en", escapeHtml)}
+                    </div>
+                </div>
+                <div class="row">
+                    <button id="signupLanguageContinueBtn">Continue</button>
+                    <button id="signupLanguageBackBtn" class="secondary">Back to log in</button>
+                </div>
+            </section>
+        `;
+        document.getElementById("signupLanguageContinueBtn").addEventListener("click", () => {
+            const picker = document.getElementById("signupLanguagePicker");
+            state.authSignupLanguage = getLanguagePickerValue(picker);
+            state.authMessage = null;
+            state.authView = "signup-credentials";
+            renderAuth();
+        });
+        bindLanguagePicker(document.getElementById("signupLanguagePicker"));
+        document.getElementById("signupLanguageBackBtn").addEventListener("click", () => {
+            state.authSignupLanguage = null;
+            state.authMessage = null;
+            state.authView = null;
+            renderAuth();
+        });
+        return;
+    }
+
+    if (state.authView === "signup-credentials") {
+        const languageLabel = getLanguageConfig(state.authSignupLanguage || "en").label;
+        appEl.innerHTML = html`
+            <section class="container card">
+                <h2>Sign up</h2>
+                <p class="hint">Create your account for ${escapeHtml(languageLabel)}.</p>
+                ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
+                <div class="row">
+                    <input id="signupEmail" type="email" placeholder="Email" />
+                    <input id="signupPassword" type="password" placeholder="Password (min 8 chars)" />
+                </div>
+                <div class="row">
+                    <button id="signupCreateBtn">Create account</button>
+                    <button id="signupCredentialsBackBtn" class="secondary">Back</button>
+                </div>
+            </section>
+        `;
+        document.getElementById("signupCreateBtn").addEventListener("click", () => completeSignup());
+        document.getElementById("signupCredentialsBackBtn").addEventListener("click", () => {
+            state.authMessage = null;
+            state.authView = "signup-language";
+            renderAuth();
+        });
+        return;
+    }
+
     appEl.innerHTML = html`
         <section class="container card">
-            <h2>Login / Register</h2>
-            <p class="hint">Use your own credentials to create account and login.</p>
+            <h2>Log in</h2>
+            <p class="hint">Sign in to your account.</p>
             ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
             <div class="row">
                 <input id="authEmail" type="email" placeholder="Email" />
-                <input id="authPassword" type="password" placeholder="Password (min 8 chars)" />
+                <input id="authPassword" type="password" placeholder="Password" />
             </div>
             <div class="row">
-                <button id="loginBtn">Login</button>
-                <button id="registerBtn" class="secondary">Register</button>
+                <button id="loginBtn">Log in</button>
+                <button id="signupBtn" class="secondary">Sign up</button>
             </div>
             <p class="auth-footer"><a href="#" id="forgotPasswordLink">Forgot password?</a></p>
         </section>
     `;
 
     document.getElementById("loginBtn").addEventListener("click", async () => {
-        await authAction("login");
+        await authLogin();
     });
-    document.getElementById("registerBtn").addEventListener("click", async () => {
-        await authAction("register");
+    document.getElementById("signupBtn").addEventListener("click", () => {
+        state.authSignupLanguage = null;
+        state.authMessage = null;
+        state.authView = "signup-language";
+        renderAuth();
     });
     document.getElementById("forgotPasswordLink").addEventListener("click", (e) => {
         e.preventDefault();
@@ -1136,18 +1208,55 @@ function renderAuth() {
     });
 }
 
-async function authAction(type) {
+async function authLogin() {
     const email = document.getElementById("authEmail").value.trim();
     const password = document.getElementById("authPassword").value;
     try {
-        if (type === "register") {
-            await api.register({ email, password });
-        }
         state.user = await api.login({ email, password });
+        setTtsLanguage(getAppLanguage());
+        applyDefaultNaturalTtsForLanguage(getAppLanguage());
         await loadAppData({ refreshReviewSessions: true });
         renderApp();
+        if (getUseNaturalTts()) setTimeout(() => preloadTTS(getAppLanguage()), 1500);
     } catch (error) {
         notify(error.message);
+    }
+}
+
+async function completeSignup() {
+    const email = document.getElementById("signupEmail").value.trim();
+    const password = document.getElementById("signupPassword").value;
+    const language = normalizeAppLanguage(state.authSignupLanguage || "en");
+
+    if (!email) {
+        state.authMessage = "Please enter your email.";
+        renderAuth();
+        return;
+    }
+    if (password.length < 8) {
+        state.authMessage = "Password must be at least 8 characters.";
+        renderAuth();
+        return;
+    }
+
+    try {
+        await api.register({ email, password, language });
+        state.user = await api.login({ email, password });
+        state.authSignupLanguage = null;
+        state.authView = null;
+        state.authMessage = null;
+        setTtsLanguage(getAppLanguage());
+        if (language === "sr") {
+            setUseNaturalTts(true);
+        } else {
+            applyDefaultNaturalTtsForLanguage(language);
+        }
+        await loadAppData({ refreshReviewSessions: true });
+        renderApp();
+        if (getUseNaturalTts()) setTimeout(() => preloadTTS(getAppLanguage()), 1500);
+    } catch (error) {
+        state.authMessage = error.message || "Sign up failed.";
+        renderAuth();
     }
 }
 
@@ -1323,7 +1432,7 @@ function renderApp() {
                         <button type="button" data-sentence-playphrase="${sentence.id}" class="btn-icon secondary" title="Play phrase (playphrase.me)">▶️</button>
                         <button type="button" data-sentence-youglish="${sentence.id}" class="btn-icon secondary" title="Pronounce (YouGlish)">🔤</button>
                         <button type="button" data-sentence-test-review="${sentence.id}" class="btn-icon secondary" title="Test review">📋</button>
-                        <button type="button" data-sentence-grammar="${sentence.id}" class="btn-icon secondary" title="Check grammar">✓</button>
+                        ${getAppLanguage() === "en" ? html`<button type="button" data-sentence-grammar="${sentence.id}" class="btn-icon secondary" title="Check grammar">✓</button>` : ""}
                         <button type="button" data-sentence-edit="${sentence.id}" class="btn-icon secondary" title="Edit">✏️</button>
                         <button type="button" data-sentence-video="${sentence.id}" class="btn-icon secondary" title="Video links">🎬</button>
                         <button type="button" data-sentence-schedule="${sentence.id}" class="btn-icon secondary" title="Schedule">📅</button>
@@ -1378,10 +1487,16 @@ function renderApp() {
                 </select>
               </div>
               <input id="timezoneInput" class="input-soft" value="${escapeHtml(state.settings.timezone)}" placeholder="Timezone, e.g. UTC or Europe/Berlin" />
+              <div class="row auth-language-row" style="margin-top: 0.75rem;">
+                <span class="hint auth-language-label">Learning language</span>
+                <div id="languageInputPicker" class="language-picker" role="listbox" aria-label="Learning language">
+                  ${languagePickerHtml(state.settings.language || getAppLanguage(), escapeHtml)}
+                </div>
+              </div>
               <div class="row" style="margin-top: 0.75rem;">
                 <label class="checkbox-label">
                   <input type="checkbox" id="useNaturalTtsInput" ${getUseNaturalTts() ? "checked" : ""} />
-                  Use natural voice — ${getIsKokoroSupported() ? "Kokoro (desktop)" : "Piper (iOS/Android)"}, slower first time
+                  Use natural voice — ${getNaturalTtsHint(getAppLanguage())}, slower first time
                 </label>
               </div>
               <div class="row settings-button-row review-reminders-row">
@@ -1405,6 +1520,7 @@ function renderApp() {
     syncGlobalSearchResultsDom();
     bindDashboardTabs();
     renderPendingReviews();
+    bindLanguagePicker(document.getElementById("languageInputPicker"));
     if (MIND_MAP_ENABLED) renderMindMap();
 
     if (state.selectedListId && state.justOpenedListId === state.selectedListId) {
@@ -1631,48 +1747,13 @@ function renderReviewSessionPage() {
         });
     });
 
-    document.getElementById("reviewSessionCompleteBtn").addEventListener("click", async () => {
-        const sessionPage = appEl.querySelector(".review-session-page");
-        const completeBtn = document.getElementById("reviewSessionCompleteBtn");
-        try {
-            if (completeBtn) {
-                completeBtn.disabled = true;
-                completeBtn.textContent = "Marking…";
-            }
-            await api.completeReviewSession(session.id);
-            if (sessionPage) {
-                sessionPage.classList.add("review-session-completing");
-                let navigated = false;
-                const done = () => {
-                    if (navigated) return;
-                    navigated = true;
-                    state.view = "dashboard";
-                    state.openSessionId = null;
-                    state.openSession = null;
-                    state.selectedListId = null;
-                    state.currentSection = 1;
-                    refreshAndRender();
-                };
-                sessionPage.addEventListener("transitionend", (e) => {
-                    if (e.target !== sessionPage || e.propertyName !== "opacity") return;
-                    done();
-                });
-                setTimeout(done, 500);
-            } else {
-                state.view = "dashboard";
-                state.openSessionId = null;
-                state.openSession = null;
-                state.selectedListId = null;
-                state.currentSection = 1;
-                await refreshAndRender();
-            }
-        } catch (error) {
-            notify(error.message);
-            if (completeBtn) {
-                completeBtn.disabled = false;
-                completeBtn.textContent = "Mark as reviewed";
-            }
+    document.getElementById("reviewSessionCompleteBtn").addEventListener("click", () => {
+        const incompleteCount = getIncompleteReviewItemCount(session);
+        if (incompleteCount > 0) {
+            showIncompleteReviewWarningPopup(incompleteCount, () => completeOpenReviewSession());
+            return;
         }
+        completeOpenReviewSession();
     });
 
     document.querySelectorAll("[data-review-speak-idx]").forEach((button) => {
@@ -1683,7 +1764,7 @@ function renderReviewSessionPage() {
             const itemEl = appEl.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
             showTtsProgressOnItem(itemEl);
             try {
-                await speak(item.content);
+                await speak(item.content, getAppLanguage());
             } finally {
                 hideTtsProgressOnItem(itemEl);
             }
@@ -1792,14 +1873,19 @@ function normalizeNumberWordsToDigits(text) {
     return out.join(" ");
 }
 
+function stripDiacritics(text) {
+    return (text || "").normalize("NFD").replace(/\p{M}/gu, "");
+}
+
 function normalizeForComparison(text) {
     const t = (text || "").trim().toLowerCase().replace(/\s+/g, " ");
     // Remove apostrophes first so "friend's" and "friends'" both become "friends", "don't" becomes "dont"
     const noApostrophe = t.replace(/['\u2018\u2019`]/g, "");
     // Then strip remaining punctuation and collapse spaces
     const cleaned = noApostrophe.replace(/[\s.,?!;:"\u201c\u201d\-—–()\[\]{}]+/g, " ").replace(/\s+/g, " ").trim();
+    const normalized = getAppLanguage() === "sr" ? stripDiacritics(cleaned) : cleaned;
     // Convert number words to digits so "five" matches "5", "twelve" matches "12", "twenty one" matches "21"
-    return normalizeNumberWordsToDigits(cleaned);
+    return normalizeNumberWordsToDigits(normalized);
 }
 
 function isSafariOrAppleWebKit() {
@@ -1865,7 +1951,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
 
     const expected = normalizeForComparison(expectedContent);
     const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
+    recognition.lang = getSpeechLocale(getAppLanguage());
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 3;
@@ -2028,6 +2114,62 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     }
 }
 
+function getIncompleteReviewItemCount(session) {
+    const count = session?.items?.length ?? 0;
+    let incomplete = 0;
+    for (let idx = 0; idx < count; idx++) {
+        const li = document.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
+        if (!li?.classList.contains("review-sentence-item-completed")) incomplete++;
+    }
+    return incomplete;
+}
+
+async function completeOpenReviewSession() {
+    const session = state.openSession;
+    if (!session) return;
+    const sessionPage = appEl.querySelector(".review-session-page");
+    const completeBtn = document.getElementById("reviewSessionCompleteBtn");
+    try {
+        if (completeBtn) {
+            completeBtn.disabled = true;
+            completeBtn.textContent = "Marking…";
+        }
+        await api.completeReviewSession(session.id);
+        if (sessionPage) {
+            sessionPage.classList.add("review-session-completing");
+            let navigated = false;
+            const done = () => {
+                if (navigated) return;
+                navigated = true;
+                state.view = "dashboard";
+                state.openSessionId = null;
+                state.openSession = null;
+                state.selectedListId = null;
+                state.currentSection = 1;
+                refreshAndRender();
+            };
+            sessionPage.addEventListener("transitionend", (e) => {
+                if (e.target !== sessionPage || e.propertyName !== "opacity") return;
+                done();
+            });
+            setTimeout(done, 500);
+        } else {
+            state.view = "dashboard";
+            state.openSessionId = null;
+            state.openSession = null;
+            state.selectedListId = null;
+            state.currentSection = 1;
+            await refreshAndRender();
+        }
+    } catch (error) {
+        notify(error.message);
+        if (completeBtn) {
+            completeBtn.disabled = false;
+            completeBtn.textContent = "Mark as reviewed";
+        }
+    }
+}
+
 async function updateReviewItemStageDisplay(session, idx) {
     const stage = state.reviewSpeakCheckStage[idx] ?? 1;
     const item = session?.items?.[idx];
@@ -2147,7 +2289,7 @@ function openTestReviewPopup(sentenceId) {
     listenBtn.addEventListener("click", async () => {
         showTtsProgress();
         try {
-            await speak(sentence.content);
+            await speak(sentence.content, getAppLanguage());
         } finally {
             hideTtsProgress();
         }
@@ -2289,6 +2431,56 @@ function closeMarkReviewedConfirmPopup() {
     if (!markReviewedConfirmEl) return;
     markReviewedConfirmEl.classList.remove("is-open");
     setTimeout(() => markReviewedConfirmEl.classList.remove("is-visible"), 320);
+}
+
+let incompleteReviewWarningEl = null;
+
+function showIncompleteReviewWarningPopup(incompleteCount, onConfirm) {
+    const message = incompleteCount === 1
+        ? "1 sentence hasn't completed all 3 practice stages. Do you still want to mark this session as reviewed?"
+        : `${incompleteCount} sentences haven't completed all 3 practice stages. Do you still want to mark this session as reviewed?`;
+    if (!incompleteReviewWarningEl) {
+        incompleteReviewWarningEl = document.createElement("div");
+        incompleteReviewWarningEl.className = "sentence-action-popup-backdrop mark-reviewed-confirm-backdrop";
+        incompleteReviewWarningEl.innerHTML = `
+          <div class="sentence-action-popup mark-reviewed-confirm-popup incomplete-review-warning-popup">
+            <h4>Incomplete practice</h4>
+            <p class="mark-reviewed-confirm-message incomplete-review-warning-message"></p>
+            <div class="popup-actions">
+              <button type="button" class="secondary popup-cancel">Cancel</button>
+              <button type="button" class="popup-confirm incomplete-review-warning-confirm-btn">Mark as reviewed</button>
+            </div>
+          </div>
+        `;
+        incompleteReviewWarningEl.addEventListener("click", (e) => {
+            if (e.target === incompleteReviewWarningEl) closeIncompleteReviewWarningPopup();
+        });
+        document.body.appendChild(incompleteReviewWarningEl);
+    }
+    const messageEl = incompleteReviewWarningEl.querySelector(".incomplete-review-warning-message");
+    if (messageEl) messageEl.textContent = message;
+    const popup = incompleteReviewWarningEl.querySelector(".mark-reviewed-confirm-popup");
+    const cancelBtn = popup.querySelector(".popup-cancel");
+    const confirmBtn = popup.querySelector(".incomplete-review-warning-confirm-btn");
+    cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+    confirmBtn.replaceWith(confirmBtn.cloneNode(true));
+    const newCancel = popup.querySelector(".popup-cancel");
+    const newConfirm = popup.querySelector(".incomplete-review-warning-confirm-btn");
+    newCancel.addEventListener("click", () => closeIncompleteReviewWarningPopup());
+    newConfirm.addEventListener("click", () => {
+        closeIncompleteReviewWarningPopup();
+        onConfirm();
+    });
+    incompleteReviewWarningEl.classList.add("is-visible");
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => incompleteReviewWarningEl.classList.add("is-open"));
+    });
+}
+
+function closeIncompleteReviewWarningPopup() {
+    if (!incompleteReviewWarningEl) return;
+    incompleteReviewWarningEl.classList.remove("is-open");
+    setTimeout(() => incompleteReviewWarningEl.classList.remove("is-visible"), 320);
 }
 
 function bindDashboardActions() {
@@ -2466,9 +2658,14 @@ function bindDashboardActions() {
         saveSettingsBtn.addEventListener("click", async () => {
             await api.updateSettings({
                 timezone: document.getElementById("timezoneInput").value.trim() || "UTC",
+                language: getLanguagePickerValue(document.getElementById("languageInputPicker")),
                 mergeWindowMinutes: Number(document.getElementById("mergeWindowInput").value),
                 weeklyReviewDay: Number(document.getElementById("weeklyDayInput").value)
             });
+            if (state.user) {
+                state.user.language = getLanguagePickerValue(document.getElementById("languageInputPicker"));
+            }
+            setTtsLanguage(getAppLanguage());
             await refreshAndRender();
         });
     }
@@ -2476,6 +2673,7 @@ function bindDashboardActions() {
     if (useNaturalTtsInput) {
         useNaturalTtsInput.addEventListener("change", () => {
             setUseNaturalTts(useNaturalTtsInput.checked);
+            if (useNaturalTtsInput.checked) preloadTTS(getAppLanguage());
         });
     }
 

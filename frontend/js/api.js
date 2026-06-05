@@ -81,6 +81,9 @@ export const api = {
     getMindMap: (listId) => request(`/lists/${listId}/mind-map`),
     getAllMindMap: () => request("/mind-map"),
 
-    checkGrammar: (text) => request("/grammar/check", { method: "POST", body: JSON.stringify({ text }) }),
+    checkGrammar: (text, language = "en") => request("/grammar/check", {
+        method: "POST",
+        body: JSON.stringify({ text, language })
+    }),
     grammarConfigured: () => request("/grammar/configured")
 };

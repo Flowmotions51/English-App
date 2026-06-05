@@ -1,20 +1,28 @@
 /**
  * Text-to-speech: fast browser synthesis by default; optional natural voice via preference.
- * Desktop: Kokoro (WebGPU/WASM). Mobile (iOS Safari, Android): Piper (WASM, works on iOS).
+ * Desktop: Kokoro (WebGPU/WASM) for English. Mobile: Piper (WASM).
+ * Serbian / Croatian uses browser voices on desktop and Piper on mobile when natural voice is enabled.
  */
+
+import { getSpeechLocale, normalizeAppLanguage } from "./language.js";
 
 const KOKORO_MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const KOKORO_CDN = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
 const PIPER_CDN = "https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.4/dist/piper-tts-web.js";
 const KOKORO_VOICE = "af_bella";
-const PIPER_VOICE = "en_US-hfc_female-medium";
+const PIPER_VOICES = {
+    en: "en_US-hfc_female-medium",
+    sr: "sr_RS-serbski_institut-medium"
+};
 const STORAGE_KEY_NATURAL = "english-app-tts-natural";
 const TTS_CACHE_MAX_SIZE = 80;
 
-/** In-memory cache: key = trimmed text, value = Blob[] (Kokoro) or Blob (Piper). LRU eviction. */
+/** In-memory cache: key = `${language}::${text}`, value = Blob[] (Kokoro) or Blob (Piper). LRU eviction. */
 const ttsCache = new Map();
 
-/** Kokoro is not supported on iOS Safari and is unreliable on many mobile browsers (WebGPU/WASM limits). */
+let activeTtsLanguage = "en";
+
+/** Kokoro is English-only and not supported on iOS Safari and many mobile browsers. */
 function isKokoroSupported() {
     if (typeof navigator === "undefined" || !navigator.userAgent) return false;
     const ua = navigator.userAgent;
@@ -28,6 +36,18 @@ function useNaturalTts() {
     } catch {
         return false;
     }
+}
+
+function getPiperVoice(language) {
+    return PIPER_VOICES[normalizeAppLanguage(language)] || PIPER_VOICES.en;
+}
+
+function canUseKokoroForLanguage(language) {
+    return normalizeAppLanguage(language) === "en" && isKokoroSupported();
+}
+
+function cacheKey(language, text) {
+    return `${normalizeAppLanguage(language)}::${text}`;
 }
 
 let kokoroTTS = null;
@@ -64,7 +84,6 @@ async function loadKokoro() {
     kokoroLoadPromise = (async () => {
         kokoroModule = await import(/* webpackIgnore: true */ KOKORO_CDN);
         const { KokoroTTS } = kokoroModule;
-        // Prefer WebGPU (much faster); fall back to WASM. Use lighter dtype on WASM for speed.
         const hasWebGPU = typeof navigator !== "undefined" && !!navigator.gpu;
         const device = hasWebGPU ? "webgpu" : "wasm";
         const dtype = device === "webgpu" ? "fp32" : "q8";
@@ -115,12 +134,24 @@ function ttsCacheEvictIfNeeded() {
     }
 }
 
-function speakWithFallback(text) {
-    if (window.speechSynthesis) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = "en-US";
-        window.speechSynthesis.speak(utterance);
-    }
+function pickSpeechVoice(language) {
+    if (!window.speechSynthesis) return null;
+    const locale = getSpeechLocale(language);
+    const langPrefix = locale.split("-")[0];
+    const voices = window.speechSynthesis.getVoices();
+    return voices.find((voice) => voice.lang === locale)
+        || voices.find((voice) => voice.lang.startsWith(`${langPrefix}-`))
+        || voices.find((voice) => voice.lang.startsWith(langPrefix))
+        || null;
+}
+
+function speakWithFallback(text, language = activeTtsLanguage) {
+    if (!window.speechSynthesis) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = getSpeechLocale(language);
+    const voice = pickSpeechVoice(language);
+    if (voice) utterance.voice = voice;
+    window.speechSynthesis.speak(utterance);
 }
 
 /**
@@ -128,6 +159,27 @@ function speakWithFallback(text) {
  */
 export function getIsKokoroSupported() {
     return isKokoroSupported();
+}
+
+export function setTtsLanguage(language) {
+    activeTtsLanguage = normalizeAppLanguage(language);
+}
+
+export function getTtsLanguage() {
+    return activeTtsLanguage;
+}
+
+/**
+ * Enable natural voice by default for Serbian when the user has not chosen a preference yet.
+ */
+export function applyDefaultNaturalTtsForLanguage(language) {
+    const lang = normalizeAppLanguage(language);
+    if (lang !== "sr") return;
+    try {
+        if (localStorage.getItem(STORAGE_KEY_NATURAL) === null) {
+            setUseNaturalTts(true);
+        }
+    } catch (_) {}
 }
 
 /**
@@ -138,43 +190,67 @@ export function getUseNaturalTts() {
 }
 
 /**
- * Enable or disable natural voice. When enabling, preloads Kokoro in the background.
+ * Enable or disable natural voice. When enabling, preloads Kokoro/Piper in the background.
  */
 export function setUseNaturalTts(enabled) {
     try {
         localStorage.setItem(STORAGE_KEY_NATURAL, enabled ? "true" : "false");
-        if (enabled) preload();
+        if (enabled) preload(activeTtsLanguage);
     } catch (_) {}
 }
 
-export function preload() {
+export function getNaturalTtsHint(language = activeTtsLanguage) {
+    const lang = normalizeAppLanguage(language);
+    if (lang === "sr") {
+        return isKokoroSupported()
+            ? "Serbian browser voice (instant)"
+            : "Piper (Serbian, iOS/Android), slower first time";
+    }
+    return isKokoroSupported()
+        ? "Kokoro (desktop)"
+        : "Piper (iOS/Android), slower first time";
+}
+
+export function preload(language = activeTtsLanguage) {
     if (!useNaturalTts()) return;
-    if (isKokoroSupported()) loadKokoro().catch(() => {});
-    else loadPiper().catch(() => {});
+    const lang = normalizeAppLanguage(language);
+    if (canUseKokoroForLanguage(lang)) {
+        loadKokoro().catch(() => {});
+    } else {
+        loadPiper().catch(() => {});
+    }
 }
 
 /**
- * Speak the given text. Uses browser TTS by default (instant); uses Kokoro only if "natural voice" is enabled in Settings.
- * Natural TTS output is cached by text so repeat listens are instant.
+ * Speak the given text. Uses browser TTS by default (instant); uses Kokoro/Piper only if "natural voice" is enabled.
+ * Natural TTS output is cached by language + text so repeat listens are instant.
  * @param {string} text - Text to speak
+ * @param {string} [language] - Account language (`en` or `sr`)
  * @returns {Promise<void>}
  */
-export async function speak(text) {
+export async function speak(text, language = activeTtsLanguage) {
+    const lang = normalizeAppLanguage(language);
+    activeTtsLanguage = lang;
     const t = (text || "").trim();
     if (!t) return;
 
     stopCurrentPlayback();
 
-    if (!useNaturalTts()) {
-        speakWithFallback(t);
+    const useNatural = useNaturalTts();
+    const useKokoro = useNatural && canUseKokoroForLanguage(lang);
+    const usePiper = useNatural && !useKokoro;
+
+    if (!useNatural) {
+        speakWithFallback(t, lang);
         return;
     }
 
-    if (isKokoroSupported()) {
-        const cached = ttsCache.get(t);
+    if (useKokoro) {
+        const key = cacheKey(lang, t);
+        const cached = ttsCache.get(key);
         if (cached && Array.isArray(cached) && cached.length > 0) {
-            ttsCache.delete(t);
-            ttsCache.set(t, cached);
+            ttsCache.delete(key);
+            ttsCache.set(key, cached);
             playbackQueue.push(...cached);
             playNextInQueue();
             return;
@@ -194,25 +270,30 @@ export async function speak(text) {
                 }
                 if (blobs.length > 0) {
                     ttsCacheEvictIfNeeded();
-                    ttsCache.set(t, blobs);
+                    ttsCache.set(key, blobs);
                 }
-                if (playbackQueue.length === 0 && !playbackPlaying) speakWithFallback(t);
+                if (playbackQueue.length === 0 && !playbackPlaying) speakWithFallback(t, lang);
             })();
             splitter.push(t);
             splitter.close();
             await consumeStream;
         } catch (err) {
             console.warn("Kokoro TTS failed, using fallback:", err);
-            speakWithFallback(t);
+            speakWithFallback(t, lang);
         }
         return;
     }
 
-    // Mobile (iOS Safari, Android): use Piper TTS — WASM-based, works on iOS
-    const cached = ttsCache.get(t);
+    if (!usePiper) {
+        speakWithFallback(t, lang);
+        return;
+    }
+
+    const key = cacheKey(lang, t);
+    const cached = ttsCache.get(key);
     if (cached && cached instanceof Blob) {
-        ttsCache.delete(t);
-        ttsCache.set(t, cached);
+        ttsCache.delete(key);
+        ttsCache.set(key, cached);
         const url = URL.createObjectURL(cached);
         const audio = new Audio(url);
         currentAudio = audio;
@@ -223,20 +304,20 @@ export async function speak(text) {
         audio.onerror = () => {
             URL.revokeObjectURL(url);
             currentAudio = null;
-            speakWithFallback(t);
+            speakWithFallback(t, lang);
         };
         await audio.play();
         return;
     }
     try {
         const tts = await loadPiper();
-        const wav = await tts.predict({ text: t, voiceId: PIPER_VOICE });
+        const wav = await tts.predict({ text: t, voiceId: getPiperVoice(lang) });
         if (!wav) {
-            speakWithFallback(t);
+            speakWithFallback(t, lang);
             return;
         }
         ttsCacheEvictIfNeeded();
-        ttsCache.set(t, wav);
+        ttsCache.set(key, wav);
         const url = URL.createObjectURL(wav);
         const audio = new Audio(url);
         currentAudio = audio;
@@ -247,12 +328,12 @@ export async function speak(text) {
         audio.onerror = () => {
             URL.revokeObjectURL(url);
             currentAudio = null;
-            speakWithFallback(t);
+            speakWithFallback(t, lang);
         };
         await audio.play();
     } catch (err) {
         console.warn("Piper TTS failed, using fallback:", err);
-        speakWithFallback(t);
+        speakWithFallback(t, lang);
     }
 }
 

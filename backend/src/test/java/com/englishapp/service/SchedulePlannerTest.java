@@ -29,11 +29,33 @@ class SchedulePlannerTest {
     }
 
     @Test
-    void openEndedOccurrenceShouldRepeatEveryFourWeeksAfterBasePattern() {
-        ScheduleTemplate template = template(List.of(60, 180, 360), true, null);
+    void firstOccurrenceShouldBeRelativeToCreationTime() {
+        ScheduleTemplate template = template(List.of(1440, 2880, 10080), true, null);
         Instant createdAt = Instant.parse("2026-02-24T00:00:00Z");
 
-        Instant dueAt = SchedulePlanner.occurrenceAt(template, createdAt, 3);
+        Instant dueAt = SchedulePlanner.occurrenceAt(template, createdAt, null, 0);
+
+        assertEquals(Instant.parse("2026-02-25T00:00:00Z"), dueAt);
+    }
+
+    @Test
+    void subsequentOccurrenceShouldBeRelativeToLastReview() {
+        ScheduleTemplate template = template(List.of(1440, 2880, 10080), true, null);
+        Instant createdAt = Instant.parse("2026-02-24T00:00:00Z");
+        Instant lastReviewAt = Instant.parse("2026-02-26T12:00:00Z");
+
+        Instant dueAt = SchedulePlanner.occurrenceAt(template, createdAt, lastReviewAt, 1);
+
+        assertEquals(Instant.parse("2026-02-28T12:00:00Z"), dueAt);
+    }
+
+    @Test
+    void openEndedOccurrenceShouldRepeatEveryFourWeeksAfterLastReview() {
+        ScheduleTemplate template = template(List.of(60, 180, 360), true, null);
+        Instant createdAt = Instant.parse("2026-02-24T00:00:00Z");
+        Instant lastReviewAt = Instant.parse("2026-02-24T06:00:00Z");
+
+        Instant dueAt = SchedulePlanner.occurrenceAt(template, createdAt, lastReviewAt, 3);
 
         assertEquals(Instant.parse("2026-03-24T06:00:00Z"), dueAt);
     }
@@ -42,8 +64,9 @@ class SchedulePlannerTest {
     void endDateShouldStopSchedule() {
         ScheduleTemplate template = template(List.of(60, 180), true, LocalDate.parse("2026-02-24"));
         Instant createdAt = Instant.parse("2026-02-24T00:00:00Z");
+        Instant lastReviewAt = Instant.parse("2026-02-24T01:00:00Z");
 
-        Instant dueAt = SchedulePlanner.occurrenceAt(template, createdAt, 2);
+        Instant dueAt = SchedulePlanner.occurrenceAt(template, createdAt, lastReviewAt, 2);
 
         assertNull(dueAt);
     }

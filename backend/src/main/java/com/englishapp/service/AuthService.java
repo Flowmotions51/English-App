@@ -49,13 +49,14 @@ public class AuthService {
     }
 
     @Transactional
-    public Map<String, Object> register(String email, String password) {
+    public Map<String, Object> register(String email, String password, String language) {
         if (userAccountRepository.existsByEmail(email)) {
             throw new IllegalArgumentException("Email already in use");
         }
         UserAccount user = new UserAccount();
         user.setEmail(email.toLowerCase());
         user.setPasswordHash(passwordEncoder.encode(password));
+        user.setLanguage(normalizeLanguage(language));
         user.setCreatedAt(Instant.now());
         user = userAccountRepository.save(user);
         return userPayload(user);
@@ -144,8 +145,13 @@ public class AuthService {
                 "id", user.getId(),
                 "email", user.getEmail(),
                 "timezone", user.getTimezone(),
+                "language", user.getLanguage(),
                 "mergeWindowMinutes", user.getMergeWindowMinutes(),
                 "weeklyReviewDay", user.getWeeklyReviewDay()
         );
+    }
+
+    private static String normalizeLanguage(String language) {
+        return "sr".equalsIgnoreCase(language) ? "sr" : "en";
     }
 }

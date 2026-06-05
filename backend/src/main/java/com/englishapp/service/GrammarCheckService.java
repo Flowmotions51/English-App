@@ -6,6 +6,8 @@ import org.languagetool.rules.RuleMatch;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -15,13 +17,11 @@ import java.util.stream.Collectors;
 @Service
 public class GrammarCheckService {
 
-    private static final String LANGUAGE_CODE = "en-US";
+    private static final Map<String, String> LANGUAGE_CODES = Map.of(
+            "en", "en-US"
+    );
 
-    private final JLanguageTool langTool;
-
-    public GrammarCheckService() {
-        this.langTool = new JLanguageTool(Languages.getLanguageForShortCode(LANGUAGE_CODE));
-    }
+    private final Map<String, JLanguageTool> langTools = new ConcurrentHashMap<>();
 
     public boolean isConfigured() {
         return true;
@@ -41,12 +41,17 @@ public class GrammarCheckService {
         return normalized.toLowerCase();
     }
 
-    public GrammarCheckResult check(String text) {
+    public GrammarCheckResult check(String text, String language) {
         if (text == null || text.isBlank()) {
             return new GrammarCheckResult(false, "No text provided.");
         }
 
+        if ("sr".equalsIgnoreCase(normalizeLanguage(language))) {
+            return new GrammarCheckResult(false, "Grammar check is not available for Serbian / Croatian yet.");
+        }
+
         String normalized = normalizeForCheck(text);
+        JLanguageTool langTool = getLangTool(language);
 
         synchronized (langTool) {
             try {
@@ -69,6 +74,15 @@ public class GrammarCheckService {
                 return new GrammarCheckResult(false, "Grammar check failed: " + e.getMessage());
             }
         }
+    }
+
+    private JLanguageTool getLangTool(String language) {
+        String code = LANGUAGE_CODES.getOrDefault(normalizeLanguage(language), "en-US");
+        return langTools.computeIfAbsent(code, key -> new JLanguageTool(Languages.getLanguageForShortCode(key)));
+    }
+
+    private static String normalizeLanguage(String language) {
+        return "sr".equalsIgnoreCase(language) ? "sr" : "en";
     }
 
     public record GrammarCheckResult(boolean correct, String feedback) {

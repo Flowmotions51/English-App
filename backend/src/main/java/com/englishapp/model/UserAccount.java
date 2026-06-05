@@ -24,6 +24,9 @@ public class UserAccount {
     @Column(nullable = false)
     private String timezone = "UTC";
 
+    @Column(nullable = false, length = 8)
+    private String language = "en";
+
     @Column(name = "merge_window_minutes", nullable = false)
     private Integer mergeWindowMinutes = 60;
 

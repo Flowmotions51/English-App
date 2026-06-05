@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -21,6 +22,17 @@ public interface SentenceReviewRepository extends JpaRepository<SentenceReview, 
                 .collect(Collectors.toMap(
                         row -> ((Number) row[0]).longValue(),
                         row -> ((Number) row[1]).longValue()
+                ));
+    }
+
+    @Query("select sr.sentence.id, max(sr.reviewedAt) from SentenceReview sr where sr.user.id = :userId group by sr.sentence.id")
+    java.util.List<Object[]> lastReviewedAtBySentenceForUser(@Param("userId") Long userId);
+
+    default Map<Long, Instant> lastReviewedAtBySentenceForUserAsMap(Long userId) {
+        return lastReviewedAtBySentenceForUser(userId).stream()
+                .collect(Collectors.toMap(
+                        row -> ((Number) row[0]).longValue(),
+                        row -> (Instant) row[1]
                 ));
     }
 }

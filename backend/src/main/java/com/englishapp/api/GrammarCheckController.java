@@ -20,7 +20,10 @@ public class GrammarCheckController {
 
     @PostMapping(value = "/grammar/check", produces = MediaType.APPLICATION_JSON_VALUE)
     public Map<String, Object> check(@RequestBody @Valid GrammarCheckRequest request) {
-        GrammarCheckService.GrammarCheckResult result = grammarCheckService.check(request.text());
+        GrammarCheckService.GrammarCheckResult result = grammarCheckService.check(
+                request.text(),
+                request.language()
+        );
         return Map.of(
                 "correct", result.correct(),
                 "feedback", result.feedback()
@@ -32,6 +35,9 @@ public class GrammarCheckController {
         return Map.of("configured", grammarCheckService.isConfigured());
     }
 
-    public record GrammarCheckRequest(@NotBlank String text) {
+    public record GrammarCheckRequest(@NotBlank String text, String language) {
+        public String language() {
+            return language == null || language.isBlank() ? "en" : language;
+        }
     }
 }

@@ -31,18 +31,29 @@ public final class SchedulePlanner {
         return preferred.toInstant();
     }
 
-    public static Instant occurrenceAt(ScheduleTemplate scheduleTemplate, Instant createdAt, long occurrenceIndex) {
+    public static Instant occurrenceAt(
+            ScheduleTemplate scheduleTemplate,
+            Instant createdAt,
+            Instant lastReviewAt,
+            long occurrenceIndex
+    ) {
         List<SentenceScheduleStep> steps = scheduleTemplate.getSteps();
         if (steps.isEmpty()) {
             return null;
         }
         Instant dueAt;
-        if (occurrenceIndex < steps.size()) {
-            dueAt = createdAt.plus(Duration.ofMinutes(steps.get((int) occurrenceIndex).getOffsetMinutes()));
+        if (occurrenceIndex == 0) {
+            dueAt = createdAt.plus(Duration.ofMinutes(steps.get(0).getOffsetMinutes()));
+        } else if (occurrenceIndex < steps.size()) {
+            if (lastReviewAt == null) {
+                return null;
+            }
+            dueAt = lastReviewAt.plus(Duration.ofMinutes(steps.get((int) occurrenceIndex).getOffsetMinutes()));
         } else if (scheduleTemplate.isOpenEnded()) {
-            int lastOffset = steps.get(steps.size() - 1).getOffsetMinutes();
-            long weeklyStep = occurrenceIndex - steps.size() + 1;
-            dueAt = createdAt.plus(Duration.ofMinutes(lastOffset)).plus(Duration.ofDays(28L * weeklyStep));
+            if (lastReviewAt == null) {
+                return null;
+            }
+            dueAt = lastReviewAt.plus(Duration.ofDays(28));
         } else {
             return null;
         }

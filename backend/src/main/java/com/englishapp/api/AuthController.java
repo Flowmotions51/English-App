@@ -22,8 +22,8 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<Map<String, Object>> register(@RequestBody @Valid AuthRequest request) {
-        return ResponseEntity.ok(authService.register(request.email(), request.password()));
+    public ResponseEntity<Map<String, Object>> register(@RequestBody @Valid RegisterRequest request) {
+        return ResponseEntity.ok(authService.register(request.email(), request.password(), request.language()));
     }
 
     @PostMapping("/login")
@@ -60,6 +60,13 @@ public class AuthController {
     public record AuthRequest(
             @NotBlank @Email String email,
             @NotBlank @Size(min = 8, max = 128) String password
+    ) {
+    }
+
+    public record RegisterRequest(
+            @NotBlank @Email String email,
+            @NotBlank @Size(min = 8, max = 128) String password,
+            String language
     ) {
     }
 

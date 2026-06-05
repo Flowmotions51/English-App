@@ -352,6 +352,61 @@ select.input-soft {
     padding-right: 40px;
 }
 
+/* Custom language picker — matches .input-soft (native option styling is inconsistent in browsers) */
+.language-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.language-picker-option {
+    display: block;
+    width: 100%;
+    min-height: 52px;
+    padding: 14px 18px;
+    margin: 0;
+    font-size: 1.05rem;
+    line-height: 1.45;
+    border: none;
+    border-radius: 12px;
+    background: rgb(168, 150, 255);
+    color: #1d2433;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.2s, box-shadow 0.2s;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.language-picker-option:hover {
+    background: rgb(178, 162, 255);
+}
+
+.language-picker-option.is-selected,
+.language-picker-option:focus-visible {
+    outline: none;
+    background: #fff;
+    box-shadow: 0 0 0 2px rgb(125, 99, 255);
+}
+
+.auth-language-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 0.75rem;
+}
+
+.auth-language-row > .auth-language-label {
+    flex: 0 0 auto;
+    width: 100%;
+    margin: 0;
+}
+
+.auth-language-row > .language-picker {
+    flex: 1 1 100%;
+}
+
 .sentence-list {
     transition: none;
 }
@@ -1022,6 +1077,14 @@ li {
     min-width: min(160px, 100%);
 }
 
+.mark-reviewed-confirm-backdrop .sentence-action-popup.incomplete-review-warning-popup {
+    max-width: min(420px, 92vw);
+}
+
+.mark-reviewed-confirm-backdrop .sentence-action-popup.incomplete-review-warning-popup h4 {
+    color: #b45309;
+}
+
 .grammar-result-popup .grammar-result-title {
     margin: 0 0 8px 0;
     font-size: 1.1rem;
@@ -1679,6 +1742,12 @@ button.show-lists-btn:active,
 
     .add-sentence-input,
     .input-soft {
+        padding: 16px 20px;
+        font-size: 16px;
+    }
+
+    .language-picker-option {
+        min-height: 56px;
         padding: 16px 20px;
         font-size: 16px;
     }
