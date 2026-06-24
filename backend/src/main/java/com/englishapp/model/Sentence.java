@@ -24,4 +24,8 @@ public class Sentence {
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = true)
+    @JoinColumn(name = "meaning_group_id", nullable = true)
+    private MeaningGroup meaningGroup;
 }

@@ -1,0 +1,2 @@
+ALTER TABLE review_sessions
+    ADD COLUMN kind VARCHAR(32) NOT NULL DEFAULT 'REGULAR';

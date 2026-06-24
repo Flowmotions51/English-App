@@ -20,6 +20,9 @@ const state = {
     view: "dashboard",
     openSessionId: null,
     openSession: null,
+    minimizedSessionId: null,
+    minimizedSession: null,
+    restoringMinimizedSession: false,
     selectedSentenceId: null,
     mindMapData: null,
     mindMapPositions: {},
@@ -28,6 +31,7 @@ const state = {
     mindMapJustDragged: false,
     currentSection: 0,
     listSearchQuery: "",
+    listsFilterQuery: "",
     globalSearchQuery: "",
     globalSearchResults: [],
     globalSearchDebounce: null,
@@ -54,6 +58,13 @@ const state = {
     newSentenceId: null,
     morphClone: null,
     justOpenedListId: null,
+    openMeaningGroupId: null,
+    meaningGroupMeta: null,
+    meaningGroupSentences: [],
+    openMeaningGroupFromSentenceId: null,
+    justOpenedMeaningGroup: null,
+    groupSearchQuery: "",
+    newGroupLinkedSentenceId: null,
     mindMapInertialRAF: null,
     mindMapSnapBackAnimating: false,
     mindMapSnapBackRAF: null,
@@ -63,6 +74,10 @@ const state = {
     mindMapPinchStartScale: 1,
     /** @type {{ [idx: number]: number }} stage 1=full, 2=verbs hidden, 3=all hidden */
     reviewSpeakCheckStage: {},
+    /** @type {{ [idx: number]: boolean }} */
+    reviewCompletedItems: {},
+    /** @type {{ [sessionId: string]: { stages: { [idx: number]: number }, completed: { [idx: number]: boolean } } }} */
+    reviewSessionProgressById: {},
     testReviewStage: 1,
     /** 'forgot' | 'signup-language' | 'signup-credentials' | null when on auth screen */
     authView: null,
@@ -109,6 +124,70 @@ function isSessionUnread(session) {
 
 function getDueUnreadSessions() {
     return (state.pendingSessions || []).filter((s) => isSessionDue(s) && isSessionUnread(s));
+}
+
+function isWeeklyCatchUpSession(session) {
+    return session?.kind === "WEEKLY_CATCH_UP";
+}
+
+function getWeeklyCatchUpPendingSession() {
+    return (state.pendingSessions || []).find((session) => isWeeklyCatchUpSession(session)) || null;
+}
+
+function createReviewSessionProgress(session) {
+    const itemCount = session?.items?.length ?? 0;
+    const stages = {};
+    for (let idx = 0; idx < itemCount; idx++) {
+        stages[idx] = 1;
+    }
+    return { stages, completed: {} };
+}
+
+function normalizeReviewSessionProgress(progress, itemCount) {
+    if (!progress || itemCount < 0) return;
+    for (let idx = 0; idx < itemCount; idx++) {
+        if (progress.stages[idx] == null) progress.stages[idx] = 1;
+    }
+    Object.keys(progress.stages).forEach((key) => {
+        const idx = Number(key);
+        if (Number.isNaN(idx) || idx >= itemCount) delete progress.stages[key];
+    });
+    Object.keys(progress.completed).forEach((key) => {
+        const idx = Number(key);
+        if (Number.isNaN(idx) || idx >= itemCount) delete progress.completed[key];
+    });
+}
+
+function getOrCreateReviewSessionProgress(session) {
+    if (!session?.id) return createReviewSessionProgress(session);
+    const key = String(session.id);
+    let progress = state.reviewSessionProgressById[key];
+    if (!progress) {
+        progress = createReviewSessionProgress(session);
+        state.reviewSessionProgressById[key] = progress;
+    }
+    normalizeReviewSessionProgress(progress, session?.items?.length ?? 0);
+    return progress;
+}
+
+function loadReviewSessionProgress(session) {
+    const progress = getOrCreateReviewSessionProgress(session);
+    state.reviewSpeakCheckStage = progress.stages;
+    state.reviewCompletedItems = progress.completed;
+}
+
+function clearReviewSessionProgress(sessionId) {
+    if (sessionId == null) return;
+    delete state.reviewSessionProgressById[String(sessionId)];
+}
+
+function rehydrateReviewSessionProgressUi(session) {
+    const count = session?.items?.length ?? 0;
+    for (let idx = 0; idx < count; idx++) {
+        const li = document.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
+        if (li) li.classList.toggle("review-sentence-item-completed", !!state.reviewCompletedItems[idx]);
+        updateReviewItemStageDisplay(session, idx);
+    }
 }
 
 function showReviewDueNotificationIfNeeded() {
@@ -316,6 +395,76 @@ async function lookupWord(wordOrPhrase, fallbackWord = null) {
     }
 }
 
+function buildListsListItemsHtml() {
+    const q = (state.listsFilterQuery || "").trim().toLowerCase();
+    const filtered = q ? state.lists.filter((l) => (l.name || "").toLowerCase().includes(q)) : state.lists;
+    if (filtered.length === 0) {
+        return q
+            ? `<li class="lists-empty hint" aria-live="polite">No lists match “${escapeHtml(state.listsFilterQuery.trim())}”</li>`
+            : "";
+    }
+    return filtered.map((list) => html`
+      <li class="list-item" data-list-id="${list.id}">
+        <div class="list-item-main" role="button" tabindex="0" title="Open list">
+          <div><b>${escapeHtml(list.name)}</b> <span class="list-item-sentence-count">${Number(list.sentenceCount) || 0} sentence${(Number(list.sentenceCount) || 0) === 1 ? "" : "s"}</span></div>
+          <div class="hint">Created: ${new Date(list.createdAt).toLocaleString()}</div>
+        </div>
+        <div class="row list-actions">
+          <button type="button" data-list-open="${list.id}" class="btn-icon secondary" title="Open">📂</button>
+          <button type="button" data-list-rename="${list.id}" class="btn-icon secondary" title="Rename">✏️</button>
+          <button type="button" data-list-delete="${list.id}" class="btn-icon danger" title="Delete">🗑️</button>
+        </div>
+      </li>
+    `).join("");
+}
+
+function bindListItemActions() {
+    document.querySelectorAll("[data-list-open]").forEach((button) => {
+        button.addEventListener("click", async () => {
+            state.openedListFromMindMap = false;
+            state.restoreMindMapFullscreen = false;
+            const listId = Number(button.getAttribute("data-list-open"));
+            state.selectedListId = listId;
+            state.justOpenedListId = listId;
+            await refreshAndRender({ includePendingReviews: false });
+            scrollWindowToTop();
+        });
+    });
+    document.querySelectorAll(".list-item-main").forEach((el) => {
+        el.addEventListener("click", async () => {
+            const li = el.closest(".list-item");
+            const listId = li ? Number(li.getAttribute("data-list-id")) : null;
+            if (listId == null) return;
+            state.openedListFromMindMap = false;
+            state.restoreMindMapFullscreen = false;
+            state.selectedListId = listId;
+            state.justOpenedListId = listId;
+            await refreshAndRender({ includePendingReviews: false });
+            scrollWindowToTop();
+        });
+        el.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                el.click();
+            }
+        });
+    });
+    document.querySelectorAll("[data-list-rename]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const listId = Number(button.getAttribute("data-list-rename"));
+            const list = state.lists.find((l) => l.id === listId);
+            showListActionPopup("rename", listId, list ? list.name : "");
+        });
+    });
+    document.querySelectorAll("[data-list-delete]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const listId = Number(button.getAttribute("data-list-delete"));
+            const list = state.lists.find((l) => l.id === listId);
+            showListActionPopup("delete", listId, list ? list.name : "");
+        });
+    });
+}
+
 const GLOBAL_SEARCH_DEBOUNCE_MS = 200;
 
 function buildGlobalSearchResultsHtml() {
@@ -450,6 +599,309 @@ async function bootstrap() {
     }
 }
 
+async function loadMeaningGroupData(groupId) {
+    const [meta, sentences] = await Promise.all([
+        api.getMeaningGroup(groupId),
+        api.getMeaningGroupSentences(groupId)
+    ]);
+    state.meaningGroupMeta = meta;
+    state.meaningGroupSentences = sentences || [];
+}
+
+function getListNameById(listId) {
+    const list = state.lists.find((l) => l.id === listId);
+    return list ? list.name : "";
+}
+
+function findSentenceById(id) {
+    const fromList = state.sentences.find((s) => s.id === id);
+    if (fromList) return fromList;
+    return (state.meaningGroupSentences || []).find((s) => s.id === id) || null;
+}
+
+function scrollWindowToTop() {
+    const detail = document.querySelector(".dashboard-group-detail, .dashboard-list-detail");
+    if (detail) detail.scrollIntoView({ block: "start", inline: "nearest" });
+
+    const root = document.scrollingElement || document.documentElement;
+    const applyTopScroll = () => {
+        window.scrollTo(0, 0);
+        if (root) root.scrollTop = 0;
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+    };
+
+    applyTopScroll();
+    requestAnimationFrame(() => requestAnimationFrame(applyTopScroll));
+    setTimeout(applyTopScroll, 0);
+    setTimeout(applyTopScroll, 60);
+}
+
+async function openMeaningGroupForSentence(sentenceId) {
+    let sentence = findSentenceById(sentenceId);
+    if (!sentence) return;
+
+    try {
+        let groupId = sentence.meaningGroupId;
+        if (!groupId) {
+            const group = await api.createMeaningGroup({ label: null, notes: null });
+            const updated = await api.assignSentenceToMeaningGroup(sentenceId, { groupId: group.id });
+            groupId = group.id;
+            const idx = state.sentences.findIndex((s) => s.id === sentenceId);
+            if (idx >= 0) state.sentences[idx] = updated;
+            sentence = updated;
+        }
+
+        const openGroupView = async () => {
+            state.openMeaningGroupId = groupId;
+            state.openMeaningGroupFromSentenceId = sentenceId;
+            state.justOpenedMeaningGroup = groupId;
+            state.groupSearchQuery = "";
+            await loadMeaningGroupData(groupId);
+            renderApp();
+            scrollWindowToTop();
+        };
+
+        if (state.openMeaningGroupId === groupId) {
+            state.openMeaningGroupFromSentenceId = sentenceId;
+            await loadMeaningGroupData(groupId);
+            renderApp();
+            return;
+        }
+
+        if (state.openMeaningGroupId && state.openMeaningGroupId !== groupId) {
+            animateCloseGroupDetailThen(openGroupView);
+            return;
+        }
+
+        if (state.selectedListId && !state.openMeaningGroupId) {
+            animateCloseListDetailThen(openGroupView);
+            return;
+        }
+
+        await openGroupView();
+    } catch (err) {
+        notify(err.message || "Failed to open meaning group.");
+    }
+}
+
+function navigateBackFromGroup() {
+    state.openMeaningGroupId = null;
+    state.meaningGroupMeta = null;
+    state.meaningGroupSentences = [];
+    state.openMeaningGroupFromSentenceId = null;
+    state.justOpenedMeaningGroup = null;
+    state.groupSearchQuery = "";
+}
+
+async function navigateBackFromGroupAndRefresh() {
+    const listId = state.selectedListId;
+    navigateBackFromGroup();
+    state.justOpenedListId = listId;
+    await loadAppData({ includePendingReviews: false });
+    renderApp();
+}
+
+function updateSentenceInState(updated) {
+    if (!updated?.id) return;
+    const listIdx = state.sentences.findIndex((s) => s.id === updated.id);
+    if (listIdx >= 0) state.sentences[listIdx] = updated;
+    const groupIdx = (state.meaningGroupSentences || []).findIndex((s) => s.id === updated.id);
+    if (groupIdx >= 0) state.meaningGroupSentences[groupIdx] = updated;
+}
+
+function animateSentenceItemRemoval(sentenceId, { removalClass = "is-completing", onRemoved } = {}) {
+    const card = document.querySelector(`.sentence-item[data-sentence-id="${sentenceId}"]`);
+    if (!card) {
+        onRemoved?.();
+        return;
+    }
+    let finished = false;
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (card.isConnected) card.remove();
+        onRemoved?.();
+    };
+    card.classList.add(removalClass);
+    const onEnd = (e) => {
+        if (e.target !== card || e.propertyName !== "max-height") return;
+        card.removeEventListener("transitionend", onEnd);
+        finish();
+    };
+    card.addEventListener("transitionend", onEnd);
+    setTimeout(finish, 450);
+}
+
+function clearSentenceMeaningGroupInState(sentenceId) {
+    const patch = (s) => ({
+        ...s,
+        meaningGroupId: null,
+        meaningGroupLabel: null,
+        variantCount: 0
+    });
+    const listIdx = state.sentences.findIndex((s) => s.id === sentenceId);
+    if (listIdx >= 0) state.sentences[listIdx] = patch(state.sentences[listIdx]);
+    const groupIdx = (state.meaningGroupSentences || []).findIndex((s) => s.id === sentenceId);
+    if (groupIdx >= 0) state.meaningGroupSentences[groupIdx] = patch(state.meaningGroupSentences[groupIdx]);
+}
+
+async function linkSentenceToOpenGroup(sentenceId) {
+    if (!state.openMeaningGroupId || !sentenceId) return;
+    const alreadyLinked = (state.meaningGroupSentences || []).some((s) => s.id === sentenceId);
+    if (alreadyLinked) return;
+
+    try {
+        const updated = await api.assignSentenceToMeaningGroup(sentenceId, { groupId: state.openMeaningGroupId });
+        updateSentenceInState(updated);
+        await loadMeaningGroupData(state.openMeaningGroupId);
+        if (state.selectedListId) {
+            const data = await api.getSentencesPage(state.selectedListId, 0, 20);
+            state.sentences = data.content || [];
+        }
+        state.newGroupLinkedSentenceId = sentenceId;
+        renderApp();
+    } catch (err) {
+        notify(err.message || "Failed to link sentence to group.");
+    }
+}
+
+async function unlinkSentenceFromGroup(sentenceId) {
+    if (!sentenceId) return;
+
+    try {
+        const updated = await api.unassignSentenceFromMeaningGroup(sentenceId);
+        updateSentenceInState(updated);
+        clearSentenceMeaningGroupInState(sentenceId);
+
+        const finishUnlink = async () => {
+            if (state.openMeaningGroupId) {
+                await loadMeaningGroupData(state.openMeaningGroupId);
+            }
+            state.meaningGroupSentences = (state.meaningGroupSentences || []).filter((s) => s.id !== sentenceId);
+            if (state.openMeaningGroupFromSentenceId === sentenceId) {
+                state.openMeaningGroupFromSentenceId = null;
+            }
+            if (state.selectedListId) {
+                const data = await api.getSentencesPage(state.selectedListId, 0, 20);
+                state.sentences = data.content || [];
+            }
+            if ((state.meaningGroupSentences || []).length === 0 && state.openMeaningGroupId) {
+                navigateBackFromGroup();
+            }
+            renderApp();
+        };
+
+        const inGroupView = !!state.openMeaningGroupId;
+        const card = document.querySelector(`.sentence-item[data-sentence-id="${sentenceId}"]`);
+
+        if (inGroupView && card) {
+            animateSentenceItemRemoval(sentenceId, {
+                removalClass: "is-group-removing",
+                onRemoved: () => { finishUnlink(); }
+            });
+        } else {
+            await finishUnlink();
+        }
+    } catch (err) {
+        notify(err.message || "Failed to unlink sentence from group.");
+    }
+}
+
+function getMeaningGroupTintClass(groupId) {
+    if (groupId == null || groupId === "") return "";
+    const idx = Math.abs(Number(groupId)) % 6;
+    return `meaning-group-tint-${idx}`;
+}
+
+function renderSentenceActionsHtml(sentence, options = {}) {
+    const { inGroupView = false } = options;
+    const variantHint = (sentence.variantCount != null && sentence.variantCount > 1)
+        ? ` (${sentence.variantCount} variants)`
+        : "";
+    const showUnlink = inGroupView || !!sentence.meaningGroupId;
+    return html`
+      <div class="sentence-actions-main">
+        <button type="button" data-sentence-speak="${sentence.id}" class="btn-icon secondary" title="Listen">🔊</button>
+        <button type="button" data-sentence-playphrase="${sentence.id}" class="btn-icon secondary" title="Play phrase (playphrase.me)">▶️</button>
+        <button type="button" data-sentence-youglish="${sentence.id}" class="btn-icon secondary" title="Pronounce (YouGlish)">🔤</button>
+        <button type="button" data-sentence-test-review="${sentence.id}" class="btn-icon secondary" title="Test review">📋</button>
+        <button type="button" data-sentence-group="${sentence.id}" class="btn-icon secondary" title="Open same meaning group${variantHint}">🔗</button>
+        <button type="button" data-sentence-edit="${sentence.id}" class="btn-icon secondary" title="Edit">✏️</button>
+        <button type="button" data-sentence-video="${sentence.id}" class="btn-icon secondary" title="Video links">🎬</button>
+        <button type="button" data-sentence-schedule="${sentence.id}" class="btn-icon secondary" title="Schedule">📅</button>
+        <button type="button" data-sentence-move="${sentence.id}" class="btn-icon secondary" title="Move">➡️</button>
+        <button type="button" data-sentence-delete="${sentence.id}" class="btn-icon danger" title="Delete">🗑️</button>
+      </div>
+      ${showUnlink ? html`
+        <button type="button" data-sentence-unlink="${sentence.id}" class="btn-icon secondary sentence-unlink-btn" title="Unlink from group">🔓</button>
+      ` : ""}
+    `;
+}
+
+function renderSentenceItemHtml(sentence, options = {}) {
+    const { highlighted = false, showListName = false, inGroupView = false } = options;
+    const listMeta = showListName
+        ? ` · in ${escapeHtml(getListNameById(sentence.listId))}`
+        : "";
+    const reviewMeta = (sentence.reviewCount != null && sentence.reviewCount > 0)
+        ? ` · Reviewed ${sentence.reviewCount} time${sentence.reviewCount === 1 ? "" : "s"}`
+        : "";
+    const groupTintClass = getMeaningGroupTintClass(sentence.meaningGroupId);
+    return html`
+      <li class="sentence-item ${highlighted ? "selected" : ""} ${groupTintClass}" data-sentence-id="${sentence.id}">
+        <div class="sentence-item-content" data-sentence-select="${sentence.id}">${renderSentenceWithWordLinks(sentence.content)}</div>
+        <div class="hint sentence-item-meta">${new Date(sentence.createdAt).toLocaleString()}${listMeta}${reviewMeta}</div>
+        <div class="row sentence-actions">
+          ${renderSentenceActionsHtml(sentence, { inGroupView })}
+        </div>
+      </li>
+    `;
+}
+
+function buildMeaningGroupDetailHtml() {
+    const meta = state.meaningGroupMeta || {};
+    const title = (meta.label && String(meta.label).trim())
+        ? escapeHtml(meta.label)
+        : "Same meaning group";
+    const q = (state.groupSearchQuery || "").trim().toLowerCase();
+    const sentences = (state.meaningGroupSentences || []).filter((s) => {
+        if (!q) return true;
+        return (s.content || "").toLowerCase().includes(q);
+    });
+    const variantCount = Number(meta.sentenceCount) || (state.meaningGroupSentences || []).length;
+    const groupMemberIds = new Set((state.meaningGroupSentences || []).map((s) => s.id));
+    const linkableSentences = (state.sentences || []).filter((s) => !groupMemberIds.has(s.id));
+
+    return html`
+      <div class="dashboard-group-detail card">
+        <button type="button" id="showListFromGroupBtn" class="show-lists-btn secondary">← List</button>
+        <h2 class="dashboard-content-title">${title}</h2>
+        <div class="row list-search-row">
+          <input id="groupSearchInput" type="search" class="input-soft" placeholder="Search in group…" value="${escapeHtml(state.groupSearchQuery || "")}" autocomplete="off" />
+        </div>
+        <div class="row group-link-row">
+          <select id="groupLinkSentenceSelect" class="input-soft" ${linkableSentences.length === 0 ? "disabled" : ""}>
+            <option value="">Link sentence from this list…</option>
+            ${linkableSentences.map((s) => html`
+              <option value="${s.id}">${escapeHtml((s.content || "").slice(0, 80))}${(s.content || "").length > 80 ? "…" : ""}</option>
+            `).join("")}
+          </select>
+          <button type="button" id="groupLinkSentenceBtn" ${linkableSentences.length === 0 ? "disabled" : ""}>Link</button>
+        </div>
+        <div class="hint">${variantCount} expression${variantCount === 1 ? "" : "s"} with the same meaning.</div>
+        <ul class="sentence-list ${getMeaningGroupTintClass(state.openMeaningGroupId)} meaning-group-sentence-list">
+          ${sentences.map((sentence) => renderSentenceItemHtml(sentence, {
+              highlighted: sentence.id === state.openMeaningGroupFromSentenceId,
+              showListName: true,
+              inGroupView: true
+          })).join("")}
+        </ul>
+        ${sentences.length === 0 ? html`<div class="hint">No matching expressions.</div>` : ""}
+      </div>
+    `;
+}
+
 async function loadAppData(options = {}) {
     const { refreshReviewSessions = false } = options;
     state.lists = await api.getLists();
@@ -472,6 +924,9 @@ async function loadAppData(options = {}) {
         state.sentencesPage = 0;
         state.sentencesHasMore = false;
         state.sentencesLoading = false;
+    }
+    if (state.openMeaningGroupId) {
+        await loadMeaningGroupData(state.openMeaningGroupId);
     }
 }
 
@@ -516,7 +971,7 @@ function hideTtsProgressOnItem(itemEl) {
 }
 
 async function sentenceSpeak(id) {
-    const sentence = state.sentences.find((s) => s.id === id);
+    const sentence = findSentenceById(id);
     if (!sentence || !sentence.content) return;
     const itemEl = document.querySelector(`.sentence-item[data-sentence-id="${id}"]`);
     showTtsProgressOnItem(itemEl);
@@ -528,7 +983,7 @@ async function sentenceSpeak(id) {
 }
 
 async function sentenceEdit(id) {
-    const sentence = state.sentences.find((item) => item.id === id);
+    const sentence = findSentenceById(id);
     if (!sentence) return;
     showSentenceActionPopup("edit", id, sentence);
 }
@@ -539,6 +994,10 @@ async function sentenceDelete(id) {
 
 async function sentenceMove(id) {
     showSentenceActionPopup("move", id);
+}
+
+function sentenceUnlink(id) {
+    showSentenceActionPopup("unlink", id);
 }
 
 async function sentenceSchedule(id) {
@@ -756,7 +1215,7 @@ function showSentenceActionPopup(action, sentenceId, data) {
     }
 
     const popup = sentenceActionPopupEl.querySelector(".sentence-action-popup");
-    var sentence = state.sentences.find((s) => s.id === sentenceId);
+    var sentence = findSentenceById(sentenceId);
     if (!sentence) {
         sentence = data
     }
@@ -808,6 +1267,23 @@ function showSentenceActionPopup(action, sentenceId, data) {
             } else {
                 await refreshAndRender();
             }
+        });
+    } else if (action === "unlink") {
+        const preview = sentence?.content
+            ? escapeHtml(sentence.content.length > 120 ? `${sentence.content.slice(0, 120)}…` : sentence.content)
+            : "this sentence";
+        popup.innerHTML = `
+            <h4>🔓 Unlink from group?</h4>
+            <p class="hint">Remove “${preview}” from this meaning group. The sentence will stay in its list.</p>
+            <div class="popup-actions">
+                <button type="button" class="secondary popup-cancel">Cancel</button>
+                <button type="button" class="danger popup-confirm">Unlink</button>
+            </div>
+        `;
+        popup.querySelector(".popup-cancel").addEventListener("click", closeSentenceActionPopup);
+        popup.querySelector(".popup-confirm").addEventListener("click", async () => {
+            closeSentenceActionPopup();
+            await unlinkSentenceFromGroup(sentenceId);
         });
     } else if (action === "move") {
         const otherLists = (state.lists || []).filter((l) => l.id !== state.selectedListId);
@@ -1033,7 +1509,7 @@ function renderAuth() {
 
     if (resetToken) {
         appEl.innerHTML = html`
-            <section class="container card">
+            <section class="container card auth-card">
                 <h2>Set new password</h2>
                 <p class="hint">Enter your new password (min 8 characters).</p>
                 ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
@@ -1075,7 +1551,7 @@ function renderAuth() {
 
     if (state.authView === "forgot") {
         appEl.innerHTML = html`
-            <section class="container card">
+            <section class="container card auth-card">
                 <h2>Reset password</h2>
                 <p class="hint">Enter your email and we’ll send you a link to reset your password.</p>
                 ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
@@ -1115,7 +1591,7 @@ function renderAuth() {
 
     if (state.authView === "signup-language") {
         appEl.innerHTML = html`
-            <section class="container card">
+            <section class="container card auth-card">
                 <h2>Sign up</h2>
                 <p class="hint">Choose the language for this account. You can change it later in Settings.</p>
                 ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
@@ -1151,7 +1627,7 @@ function renderAuth() {
     if (state.authView === "signup-credentials") {
         const languageLabel = getLanguageConfig(state.authSignupLanguage || "en").label;
         appEl.innerHTML = html`
-            <section class="container card">
+            <section class="container card auth-card">
                 <h2>Sign up</h2>
                 <p class="hint">Create your account for ${escapeHtml(languageLabel)}.</p>
                 ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
@@ -1175,7 +1651,7 @@ function renderAuth() {
     }
 
     appEl.innerHTML = html`
-        <section class="container card">
+        <section class="container card auth-card">
             <h2>Log in</h2>
             <p class="hint">Sign in to your account.</p>
             ${state.authMessage ? html`<p class="auth-message">${escapeHtml(state.authMessage)}</p>` : ""}
@@ -1211,6 +1687,13 @@ function renderAuth() {
 async function authLogin() {
     const email = document.getElementById("authEmail").value.trim();
     const password = document.getElementById("authPassword").value;
+    const loginBtn = document.getElementById("loginBtn");
+    const signupBtn = document.getElementById("signupBtn");
+    if (loginBtn) {
+        loginBtn.disabled = true;
+        loginBtn.textContent = "Logging in…";
+    }
+    if (signupBtn) signupBtn.disabled = true;
     try {
         state.user = await api.login({ email, password });
         setTtsLanguage(getAppLanguage());
@@ -1220,6 +1703,11 @@ async function authLogin() {
         if (getUseNaturalTts()) setTimeout(() => preloadTTS(getAppLanguage()), 1500);
     } catch (error) {
         notify(error.message);
+        if (loginBtn) {
+            loginBtn.disabled = false;
+            loginBtn.textContent = "Log in";
+        }
+        if (signupBtn) signupBtn.disabled = false;
     }
 }
 
@@ -1406,7 +1894,8 @@ function renderApp() {
         </div>
         ` : ""}
         <div class="dashboard-content">
-          ${state.selectedListId ? html`
+          ${state.selectedListId && state.openMeaningGroupId ? buildMeaningGroupDetailHtml() : ""}
+          ${state.selectedListId && !state.openMeaningGroupId ? html`
             <div class="dashboard-list-detail card">
               <button type="button" id="showListsBtn" class="show-lists-btn secondary">← Lists</button>
               <h2 class="dashboard-content-title">${selectedList ? escapeHtml(selectedList.name) : ""}</h2>
@@ -1423,30 +1912,16 @@ function renderApp() {
                   ${(() => {
                     const q = (state.listSearchQuery || "").trim().toLowerCase();
                     const filtered = q ? state.sentences.filter((s) => (s.content || "").toLowerCase().includes(q)) : state.sentences;
-                    return filtered.map((sentence) => html`
-                    <li class="sentence-item ${state.selectedSentenceId === sentence.id ? "selected" : ""}" data-sentence-id="${sentence.id}">
-                      <div class="sentence-item-content" data-sentence-select="${sentence.id}">${renderSentenceWithWordLinks(sentence.content)}</div>
-                      <div class="hint sentence-item-meta">${new Date(sentence.createdAt).toLocaleString()}${(sentence.reviewCount != null && sentence.reviewCount > 0) ? ` · Reviewed ${sentence.reviewCount} time${sentence.reviewCount === 1 ? "" : "s"}` : ""}</div>
-                      <div class="row sentence-actions">
-                        <button type="button" data-sentence-speak="${sentence.id}" class="btn-icon secondary" title="Listen">🔊</button>
-                        <button type="button" data-sentence-playphrase="${sentence.id}" class="btn-icon secondary" title="Play phrase (playphrase.me)">▶️</button>
-                        <button type="button" data-sentence-youglish="${sentence.id}" class="btn-icon secondary" title="Pronounce (YouGlish)">🔤</button>
-                        <button type="button" data-sentence-test-review="${sentence.id}" class="btn-icon secondary" title="Test review">📋</button>
-                        ${getAppLanguage() === "en" ? html`<button type="button" data-sentence-grammar="${sentence.id}" class="btn-icon secondary" title="Check grammar">✓</button>` : ""}
-                        <button type="button" data-sentence-edit="${sentence.id}" class="btn-icon secondary" title="Edit">✏️</button>
-                        <button type="button" data-sentence-video="${sentence.id}" class="btn-icon secondary" title="Video links">🎬</button>
-                        <button type="button" data-sentence-schedule="${sentence.id}" class="btn-icon secondary" title="Schedule">📅</button>
-                        <button type="button" data-sentence-move="${sentence.id}" class="btn-icon secondary" title="Move">➡️</button>
-                        <button type="button" data-sentence-delete="${sentence.id}" class="btn-icon danger" title="Delete">🗑️</button>
-                      </div>
-                    </li>
-                  `).join("");
+                    return filtered.map((sentence) => renderSentenceItemHtml(sentence, {
+                        highlighted: state.selectedSentenceId === sentence.id
+                    })).join("");
                   })()}
                 </ul>
                 <div id="sentenceListSentinel" class="sentence-list-sentinel" aria-hidden="true"></div>
               ` : ""}
             </div>
-          ` : html`
+          ` : ""}
+          ${!state.selectedListId ? html`
             <div class="dashboard-panel card" data-section="0" style="display: ${state.currentSection === 0 ? "block" : "none"}">
               <h3>Sentence Lists</h3>
               <div class="row global-search-row">
@@ -1457,21 +1932,10 @@ function renderApp() {
                 <input id="newListName" class="input-soft" placeholder="New list name" />
                 <button id="createListBtn">Create</button>
               </div>
-              <ul class="lists-list">
-                ${state.lists.map((list) => html`
-                  <li class="list-item" data-list-id="${list.id}">
-                    <div class="list-item-main" role="button" tabindex="0" title="Open list">
-                      <div><b>${escapeHtml(list.name)}</b> <span class="list-item-sentence-count">${Number(list.sentenceCount) || 0} sentence${(Number(list.sentenceCount) || 0) === 1 ? "" : "s"}</span></div>
-                      <div class="hint">Created: ${new Date(list.createdAt).toLocaleString()}</div>
-                    </div>
-                    <div class="row list-actions">
-                      <button type="button" data-list-open="${list.id}" class="btn-icon secondary" title="Open">📂</button>
-                      <button type="button" data-list-rename="${list.id}" class="btn-icon secondary" title="Rename">✏️</button>
-                      <button type="button" data-list-delete="${list.id}" class="btn-icon danger" title="Delete">🗑️</button>
-                    </div>
-                  </li>
-                `).join("")}
-              </ul>
+              <div class="row list-search-row">
+                <input id="listsFilterInput" type="search" class="input-soft" placeholder="Search lists by name…" value="${escapeHtml(state.listsFilterQuery || "")}" autocomplete="off" />
+              </div>
+              <ul class="lists-list">${buildListsListItemsHtml()}</ul>
             </div>
             <div class="dashboard-panel card" data-section="1" style="display: ${state.currentSection === 1 ? "block" : "none"}">
               <h3 data-pending-reviews-heading>Pending Reviews (${notificationsCount})</h3>
@@ -1511,7 +1975,7 @@ function renderApp() {
               <h3>Mind Map</h3>
               <p class="dashboard-coming-soon">Coming soon</p>
             </div>
-          `}
+          ` : ""}
         </div>
       </section>
     `;
@@ -1523,7 +1987,7 @@ function renderApp() {
     bindLanguagePicker(document.getElementById("languageInputPicker"));
     if (MIND_MAP_ENABLED) renderMindMap();
 
-    if (state.selectedListId && state.justOpenedListId === state.selectedListId) {
+    if (state.selectedListId && state.justOpenedListId === state.selectedListId && !state.openMeaningGroupId) {
         const listDetail = appEl.querySelector(".dashboard-list-detail");
         if (listDetail) {
             requestAnimationFrame(() => {
@@ -1535,9 +1999,26 @@ function renderApp() {
         } else {
             state.justOpenedListId = null;
         }
-    } else if (state.selectedListId) {
+    } else if (state.selectedListId && !state.openMeaningGroupId) {
         const listDetail = appEl.querySelector(".dashboard-list-detail");
         if (listDetail) listDetail.classList.add("list-detail-open");
+    }
+
+    if (state.openMeaningGroupId && state.justOpenedMeaningGroup === state.openMeaningGroupId) {
+        const groupDetail = appEl.querySelector(".dashboard-group-detail");
+        if (groupDetail) {
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    groupDetail.classList.add("list-detail-open");
+                    state.justOpenedMeaningGroup = null;
+                });
+            });
+        } else {
+            state.justOpenedMeaningGroup = null;
+        }
+    } else if (state.openMeaningGroupId) {
+        const groupDetail = appEl.querySelector(".dashboard-group-detail");
+        if (groupDetail) groupDetail.classList.add("list-detail-open");
     }
 
     if (state.newListId != null && !state.selectedListId && state.currentSection === 0) {
@@ -1613,6 +2094,20 @@ function renderApp() {
         }
     }
 
+    if (state.newGroupLinkedSentenceId != null) {
+        const linkedEl = document.querySelector(`.sentence-item[data-sentence-id="${state.newGroupLinkedSentenceId}"]`);
+        if (linkedEl) {
+            linkedEl.classList.add("is-group-adding");
+            linkedEl.addEventListener("animationend", function onBlinkEnd() {
+                linkedEl.removeEventListener("animationend", onBlinkEnd);
+                linkedEl.classList.remove("is-group-adding");
+                state.newGroupLinkedSentenceId = null;
+            });
+        } else {
+            state.newGroupLinkedSentenceId = null;
+        }
+    }
+
     if (state.savedListScrollY) {
         setTimeout(() => {
             window.scrollTo(0, state.savedListScrollY);
@@ -1621,10 +2116,12 @@ function renderApp() {
     }
 
     mountScrollJumpControls();
+    mountFloatingSessionSquares();
 }
 
 function navigateBackToLists() {
     state.selectedListId = null;
+    navigateBackFromGroup();
     state.listSearchQuery = "";
     state.openedListFromMindMap = false;
     state.restoreMindMapFullscreen = false;
@@ -1632,9 +2129,9 @@ function navigateBackToLists() {
     renderApp();
 }
 
-function animateCloseListDetailThen(callback) {
-    const listDetail = document.querySelector(".dashboard-list-detail");
-    if (!listDetail || !listDetail.classList.contains("list-detail-open")) {
+function animateCloseDetailPanelThen(panelSelector, backButtonId, callback) {
+    const panel = document.querySelector(panelSelector);
+    if (!panel || !panel.classList.contains("list-detail-open")) {
         callback();
         return;
     }
@@ -1646,20 +2143,28 @@ function animateCloseListDetailThen(callback) {
         callback();
     };
 
-    const showListsBtn = document.getElementById("showListsBtn");
-    if (showListsBtn) showListsBtn.disabled = true;
+    const backBtn = backButtonId ? document.getElementById(backButtonId) : null;
+    if (backBtn) backBtn.disabled = true;
 
-    listDetail.classList.add("list-detail-closing");
-    listDetail.classList.remove("list-detail-open");
+    panel.classList.add("list-detail-closing");
+    panel.classList.remove("list-detail-open");
 
     const onEnd = (e) => {
-        if (e.target !== listDetail) return;
+        if (e.target !== panel) return;
         if (e.propertyName !== "opacity" && e.propertyName !== "transform") return;
-        listDetail.removeEventListener("transitionend", onEnd);
+        panel.removeEventListener("transitionend", onEnd);
         finish();
     };
-    listDetail.addEventListener("transitionend", onEnd);
+    panel.addEventListener("transitionend", onEnd);
     setTimeout(finish, 450);
+}
+
+function animateCloseListDetailThen(callback) {
+    animateCloseDetailPanelThen(".dashboard-list-detail", "showListsBtn", callback);
+}
+
+function animateCloseGroupDetailThen(callback) {
+    animateCloseDetailPanelThen(".dashboard-group-detail", "showListFromGroupBtn", callback);
 }
 
 function bindDashboardTabs() {
@@ -1688,18 +2193,120 @@ function bindDashboardTabs() {
         });
     }
 
+    const showListFromGroupBtn = document.getElementById("showListFromGroupBtn");
+    if (showListFromGroupBtn) {
+        showListFromGroupBtn.addEventListener("click", () => {
+            animateCloseGroupDetailThen(() => {
+                navigateBackFromGroupAndRefresh();
+            });
+        });
+    }
+
+    const groupSearchInput = document.getElementById("groupSearchInput");
+    if (groupSearchInput) {
+        groupSearchInput.addEventListener("input", () => {
+            state.groupSearchQuery = groupSearchInput.value;
+            const q = state.groupSearchQuery.trim().toLowerCase();
+            if (!q) {
+                renderApp();
+                return;
+            }
+            document.querySelectorAll(".dashboard-group-detail .sentence-list .sentence-item").forEach((li) => {
+                const contentEl = li.querySelector(".sentence-item-content");
+                const text = (contentEl ? contentEl.textContent : "").toLowerCase();
+                li.style.display = text.includes(q) ? "" : "none";
+            });
+        });
+    }
+
+    const groupLinkSentenceBtn = document.getElementById("groupLinkSentenceBtn");
+    if (groupLinkSentenceBtn) {
+        groupLinkSentenceBtn.addEventListener("click", () => {
+            const select = document.getElementById("groupLinkSentenceSelect");
+            const sentenceId = select ? Number(select.value) : NaN;
+            if (!sentenceId) return;
+            linkSentenceToOpenGroup(sentenceId);
+        });
+    }
+
+    const listsFilterInput = document.getElementById("listsFilterInput");
+    if (listsFilterInput) {
+        listsFilterInput.addEventListener("input", () => {
+            state.listsFilterQuery = listsFilterInput.value;
+            const listEl = document.querySelector(".dashboard-panel[data-section=\"0\"] .lists-list");
+            if (!listEl) return;
+            // Rebuild only the list contents from state so both narrowing and
+            // broadening the query work, while the search input keeps focus.
+            listEl.innerHTML = buildListsListItemsHtml();
+            bindListItemActions();
+        });
+    }
+
     const listSearchInput = document.getElementById("listSearchInput");
     if (listSearchInput) {
         listSearchInput.addEventListener("input", () => {
             state.listSearchQuery = listSearchInput.value;
             const q = state.listSearchQuery.trim().toLowerCase();
+                if (!q) {
+                    renderApp(); // rebuild full list from state.sentences
+                    return;
+                }
             document.querySelectorAll(".dashboard-list-detail .sentence-list .sentence-item").forEach((li) => {
                 const contentEl = li.querySelector(".sentence-item-content");
                 const text = (contentEl ? contentEl.textContent : "").toLowerCase();
-                li.style.display = q === "" || text.includes(q) ? "" : "none";
+                li.style.display = text.includes(q) ? "" : "none";
             });
         });
     }
+}
+
+function renderReviewSentenceItemHtml(item, idx, groupId) {
+    const tintClass = groupId ? getMeaningGroupTintClass(groupId) : "";
+    return html`
+      <li class="review-sentence-item ${tintClass}" data-review-idx="${idx}">
+        <div class="review-sentence-main">
+          <div class="review-sentence-content">${renderSentenceWithWordLinks(item.content)}</div>
+          <div class="review-sentence-buttons">
+            <button type="button" class="btn-icon secondary review-edit" data-review-edit-idx="${idx}" title="Edit">✏</button>
+            <button type="button" class="btn-icon secondary review-speak" data-review-speak-idx="${idx}" title="Listen">🔊</button>
+            <button type="button" class="btn-icon secondary review-speak-check stage-1" data-review-speak-check-idx="${idx}" title="Speak and check (stage 1: full sentence)">🎤</button>
+          </div>
+        </div>
+        <div class="review-voice-result" data-review-voice-idx="${idx}" aria-live="polite"></div>
+      </li>
+    `;
+}
+
+function buildReviewSessionItemsHtml(items) {
+    const parts = [];
+    let idx = 0;
+    while (idx < items.length) {
+        const item = items[idx];
+        const groupId = item.meaningGroupId;
+        if (!groupId) {
+            parts.push(renderReviewSentenceItemHtml(item, idx));
+            idx += 1;
+            continue;
+        }
+        const groupLabel = (item.meaningGroupLabel && String(item.meaningGroupLabel).trim())
+            ? escapeHtml(item.meaningGroupLabel)
+            : "Same meaning";
+        const tintClass = getMeaningGroupTintClass(groupId);
+        const groupItems = [];
+        while (idx < items.length && items[idx].meaningGroupId === groupId) {
+            groupItems.push(renderReviewSentenceItemHtml(items[idx], idx, groupId));
+            idx += 1;
+        }
+        parts.push(html`
+          <li class="review-meaning-group ${tintClass}">
+            <div class="hint review-meaning-group-label">${groupLabel}</div>
+            <ol class="review-meaning-group-list">
+              ${groupItems.join("")}
+            </ol>
+          </li>
+        `);
+    }
+    return parts.join("");
 }
 
 function renderReviewSessionPage() {
@@ -1711,50 +2318,55 @@ function renderReviewSessionPage() {
         renderApp();
         return;
     }
-    state.reviewSpeakCheckStage = Object.fromEntries(session.items.map((_, i) => [i, 1]));
+    removeFloatingSessionSquares();
+    const isWeeklyCatchUp = isWeeklyCatchUpSession(session);
+    loadReviewSessionProgress(session);
     appEl.innerHTML = html`
       <section class="container card review-session-page">
-        <h2>Review session</h2>
-        <p class="hint">Due: ${new Date(session.startAt).toLocaleString()} — ${session.items.length} sentence(s) to review.</p>
+        <h2>${isWeeklyCatchUp ? "Weekly catch-up review" : "Review session"}</h2>
+        <p class="hint">
+          Due: ${new Date(session.startAt).toLocaleString()} — ${session.items.length} sentence(s) to review.
+          ${isWeeklyCatchUp ? " Weekly catch-up reminder session." : ""}
+        </p>
         <ol class="review-sentences-list">
-          ${session.items.map((item, idx) => html`
-            <li class="review-sentence-item" data-review-idx="${idx}">
-              <div class="review-sentence-main">
-                <div class="review-sentence-content">${renderSentenceWithWordLinks(item.content)}</div>
-                <div class="review-sentence-buttons">
-                  <button type="button" class="btn-icon secondary review-edit" data-review-edit-idx="${idx}" title="Edit">✏</button>
-                  <button type="button" class="btn-icon secondary review-speak" data-review-speak-idx="${idx}" title="Listen">🔊</button>
-                  <button type="button" class="btn-icon secondary review-speak-check stage-1" data-review-speak-check-idx="${idx}" title="Speak and check (stage 1: full sentence)">🎤</button>
-                </div>
-              </div>
-              <div class="review-voice-result" data-review-voice-idx="${idx}" aria-live="polite"></div>
-            </li>
-          `).join("")}
+          ${buildReviewSessionItemsHtml(session.items)}
         </ol>
         <div class="row review-session-actions">
-          <button id="reviewSessionBackBtn" class="secondary">Back to dashboard</button>
+          ${isWeeklyCatchUp ? "" : html`<button id="reviewSessionBackBtn" class="secondary">Back to dashboard</button>`}
+          <button id="reviewSessionMinimizeBtn" class="secondary">Minimize</button>
           <button id="reviewSessionCompleteBtn">Mark as reviewed</button>
         </div>
       </section>
     `;
 
-    document.getElementById("reviewSessionBackBtn").addEventListener("click", () => {
-        showBackToDashboardConfirmPopup(0, async () => {
-            state.view = "dashboard";
-            state.openSessionId = null;
-            state.openSession = null;
-            renderApp();
+    const backBtn = document.getElementById("reviewSessionBackBtn");
+    if (backBtn) {
+        backBtn.addEventListener("click", () => {
+            showBackToDashboardConfirmPopup(0, async () => {
+                clearReviewSessionProgress(session.id);
+                state.view = "dashboard";
+                state.openSessionId = null;
+                state.openSession = null;
+                renderApp();
+            });
         });
+    }
+
+    document.getElementById("reviewSessionMinimizeBtn").addEventListener("click", () => {
+        minimizeReviewSession();
     });
 
-    document.getElementById("reviewSessionCompleteBtn").addEventListener("click", () => {
-        const incompleteCount = getIncompleteReviewItemCount(session);
-        if (incompleteCount > 0) {
-            showIncompleteReviewWarningPopup(incompleteCount, () => completeOpenReviewSession());
-            return;
-        }
-        completeOpenReviewSession();
-    });
+    const completeBtn = document.getElementById("reviewSessionCompleteBtn");
+    if (completeBtn) {
+        completeBtn.addEventListener("click", () => {
+            const incompleteCount = getIncompleteReviewItemCount(session);
+            if (incompleteCount > 0) {
+                showIncompleteReviewWarningPopup(incompleteCount, () => completeOpenReviewSession());
+                return;
+            }
+            completeOpenReviewSession();
+        });
+    }
 
     document.querySelectorAll("[data-review-speak-idx]").forEach((button) => {
         button.addEventListener("click", async () => {
@@ -1831,14 +2443,198 @@ function renderReviewSessionPage() {
         });
     });
 
+    rehydrateReviewSessionProgressUi(session);
+
     const sessionPage = appEl.querySelector(".review-session-page");
     if (sessionPage) {
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => sessionPage.classList.add("review-session-open"));
-        });
+        if (state.restoringMinimizedSession) {
+            state.restoringMinimizedSession = false;
+            sessionPage.classList.add("review-session-open");
+            sessionPage.style.transition = "none";
+            sessionPage.style.transform = "none";
+            const rect = sessionPage.getBoundingClientRect();
+            const fromTransform = computeMinimizeTransform(rect);
+            sessionPage.style.transformOrigin = "top left";
+            sessionPage.style.transform = fromTransform;
+            sessionPage.style.opacity = "0";
+            requestAnimationFrame(() => {
+                sessionPage.style.transition = "";
+                requestAnimationFrame(() => {
+                    sessionPage.style.transform = "";
+                    sessionPage.style.opacity = "";
+                    const onRestored = (e) => {
+                        if (e.target !== sessionPage || e.propertyName !== "transform") return;
+                        sessionPage.removeEventListener("transitionend", onRestored);
+                        sessionPage.style.transformOrigin = "";
+                    };
+                    sessionPage.addEventListener("transitionend", onRestored);
+                });
+            });
+        } else {
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => sessionPage.classList.add("review-session-open"));
+            });
+        }
     }
 
     mountScrollJumpControls();
+}
+
+const FLOATING_SESSION_SQUARE = { size: 64, rightMargin: 96, bottomMargin: 16, gap: 8 };
+
+function getFloatingSquareRight(slotIndex) {
+    const { rightMargin, size, gap } = FLOATING_SESSION_SQUARE;
+    return rightMargin + slotIndex * (size + gap);
+}
+
+function computeFloatingSquareTargetRect(slotIndex) {
+    const { size, bottomMargin } = FLOATING_SESSION_SQUARE;
+    const right = getFloatingSquareRight(slotIndex);
+    const left = window.innerWidth - right - size;
+    const top = window.innerHeight - bottomMargin - size;
+    return { left, top, size };
+}
+
+function computeMinimizeTransform(rect, slotIndex = 0) {
+    const target = computeFloatingSquareTargetRect(slotIndex);
+    const scale = target.size / rect.width;
+    const tx = target.left - rect.left;
+    const ty = target.top - rect.top;
+    return `translate(${tx}px, ${ty}px) scale(${scale})`;
+}
+
+function minimizeReviewSession() {
+    const session = state.openSession;
+    if (!session) return;
+    const weeklyCatchUp = isWeeklyCatchUpSession(session);
+    if (!weeklyCatchUp) {
+        state.minimizedSessionId = session.id;
+        state.minimizedSession = session;
+    }
+    const sessionPage = appEl.querySelector(".review-session-page");
+    if (!sessionPage) {
+        state.view = "dashboard";
+        renderApp();
+        return;
+    }
+    sessionPage.style.transform = "none";
+    const rect = sessionPage.getBoundingClientRect();
+    const targetSlot = weeklyCatchUp && state.minimizedSession ? 1 : 0;
+    const toTransform = computeMinimizeTransform(rect, targetSlot);
+    sessionPage.style.transformOrigin = "top left";
+    void sessionPage.offsetWidth;
+    sessionPage.style.transform = toTransform;
+    sessionPage.style.opacity = "0";
+    const onMinimized = (e) => {
+        if (e.target !== sessionPage || e.propertyName !== "transform") return;
+        sessionPage.removeEventListener("transitionend", onMinimized);
+        state.view = "dashboard";
+        renderApp();
+    };
+    sessionPage.addEventListener("transitionend", onMinimized);
+}
+
+function restoreMinimizedSession() {
+    if (state.minimizedSession && isWeeklyCatchUpSession(state.minimizedSession)) {
+        state.minimizedSessionId = null;
+        state.minimizedSession = null;
+        return;
+    }
+    if (state.minimizedSessionId == null || !state.minimizedSession) return;
+    const session = state.minimizedSession;
+    removeFloatingSessionSquares();
+    state.minimizedSessionId = null;
+    state.minimizedSession = null;
+    state.restoringMinimizedSession = true;
+    state.view = "reviewSession";
+    state.openSession = session;
+    state.openSessionId = session.id;
+    renderApp();
+}
+
+function removeFloatingSessionSquares() {
+    const minimizedSquare = document.getElementById("minimizedSessionSquare");
+    if (minimizedSquare) minimizedSquare.remove();
+    const catchUpSquare = document.getElementById("weeklyCatchUpSessionSquare");
+    if (catchUpSquare) catchUpSquare.remove();
+}
+
+function layoutFloatingSessionSquares() {
+    let slot = 0;
+    const minimizedSquare = document.getElementById("minimizedSessionSquare");
+    if (minimizedSquare) {
+        minimizedSquare.style.setProperty("--floating-square-right", `${getFloatingSquareRight(slot)}px`);
+        slot += 1;
+    }
+    const catchUpSquare = document.getElementById("weeklyCatchUpSessionSquare");
+    if (catchUpSquare) {
+        catchUpSquare.style.setProperty("--floating-square-right", `${getFloatingSquareRight(slot)}px`);
+    }
+}
+
+function mountMinimizedSessionSquare() {
+    if (state.minimizedSession && isWeeklyCatchUpSession(state.minimizedSession)) {
+        state.minimizedSessionId = null;
+        state.minimizedSession = null;
+    }
+    if (state.minimizedSessionId == null || !state.minimizedSession) {
+        const existing = document.getElementById("minimizedSessionSquare");
+        if (existing) existing.remove();
+        return;
+    }
+    let square = document.getElementById("minimizedSessionSquare");
+    if (!square) {
+        square = document.createElement("button");
+        square.type = "button";
+        square.id = "minimizedSessionSquare";
+        square.className = "floating-session-square minimized-session-square is-appearing";
+        square.title = "Restore minimized review session";
+        square.setAttribute("aria-label", "Restore minimized review session");
+        square.textContent = "⤢";
+        square.addEventListener("click", () => restoreMinimizedSession());
+        document.body.appendChild(square);
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => square.classList.remove("is-appearing"));
+        });
+    }
+}
+
+async function openWeeklyCatchUpSession() {
+    const session = getWeeklyCatchUpPendingSession();
+    if (!session) return;
+    await openPendingSession(session);
+}
+
+function mountWeeklyCatchUpSessionSquare() {
+    const session = getWeeklyCatchUpPendingSession();
+    if (!session) {
+        const existing = document.getElementById("weeklyCatchUpSessionSquare");
+        if (existing) existing.remove();
+        return;
+    }
+    let square = document.getElementById("weeklyCatchUpSessionSquare");
+    if (!square) {
+        square = document.createElement("button");
+        square.type = "button";
+        square.id = "weeklyCatchUpSessionSquare";
+        square.className = "floating-session-square weekly-catch-up-square is-appearing";
+        square.title = "Open weekly catch-up review session";
+        square.setAttribute("aria-label", "Open weekly catch-up review session");
+        square.textContent = "⚠";
+        square.addEventListener("click", () => {
+            openWeeklyCatchUpSession();
+        });
+        document.body.appendChild(square);
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => square.classList.remove("is-appearing"));
+        });
+    }
+}
+
+function mountFloatingSessionSquares() {
+    mountMinimizedSessionSquare();
+    mountWeeklyCatchUpSessionSquare();
+    layoutFloatingSessionSquares();
 }
 
 const NUMBER_WORDS = {
@@ -1849,6 +2645,31 @@ const NUMBER_WORDS = {
 };
 const TENS_WORDS = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
 const ONES_WORDS = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+const EN_HOMOPHONE_GROUPS = [
+    ["shoe", "shoo"],
+    ["their", "there", "theyre"],
+    ["write", "right"],
+    ["suite", "sweet"],
+    ["wear", "where"],
+    ["waist", "waste"],
+    ["son", "sun"],
+    ["peace", "piece"],
+    ["to", "too", "two"],
+    ["for", "four"],
+    ["hear", "here"],
+    ["one", "won"],
+    ["no", "know"],
+    ["sea", "see"],
+    ["be", "bee"],
+    ["break", "brake"],
+    ["our", "hour"]
+];
+const EN_HOMOPHONE_INDEX = {};
+EN_HOMOPHONE_GROUPS.forEach((group, idx) => {
+    group.forEach((word) => {
+        EN_HOMOPHONE_INDEX[word] = idx;
+    });
+});
 
 function normalizeNumberWordsToDigits(text) {
     if (!text) return text;
@@ -1886,6 +2707,35 @@ function normalizeForComparison(text) {
     const normalized = getAppLanguage() === "sr" ? stripDiacritics(cleaned) : cleaned;
     // Convert number words to digits so "five" matches "5", "twelve" matches "12", "twenty one" matches "21"
     return normalizeNumberWordsToDigits(normalized);
+}
+
+function splitComparableWords(text) {
+    return (text || "").split(/\s+/).filter(Boolean);
+}
+
+function areHomophoneEquivalentWord(expectedWord, heardWord) {
+    if (expectedWord === heardWord) return true;
+    if (getAppLanguage() !== "en") return false;
+    const expectedGroup = EN_HOMOPHONE_INDEX[expectedWord];
+    if (expectedGroup == null) return false;
+    return expectedGroup === EN_HOMOPHONE_INDEX[heardWord];
+}
+
+function areHomophoneEquivalentNormalized(expectedNormalized, heardNormalized) {
+    const expectedWords = splitComparableWords(expectedNormalized);
+    const heardWords = splitComparableWords(heardNormalized);
+    if (!expectedWords.length || expectedWords.length !== heardWords.length) return false;
+    for (let i = 0; i < expectedWords.length; i++) {
+        if (!areHomophoneEquivalentWord(expectedWords[i], heardWords[i])) return false;
+    }
+    return true;
+}
+
+function isVoiceMatch(expectedNormalized, heardText) {
+    const heardNormalized = normalizeForComparison(heardText);
+    if (!expectedNormalized || !heardNormalized) return false;
+    return heardNormalized === expectedNormalized ||
+        areHomophoneEquivalentNormalized(expectedNormalized, heardNormalized);
 }
 
 function isSafariOrAppleWebKit() {
@@ -2014,8 +2864,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     doneSpeakingBtn.addEventListener("click", () => finalizeListeningOutcome());
 
     const tryMatchFromAggregatedAndLastFinal = (lastFinal) => {
-        const normAgg = normalizeForComparison(aggregatedFinalTranscript);
-        if (normAgg === expected) {
+        if (isVoiceMatch(expected, aggregatedFinalTranscript)) {
             return { match: true, transcript: aggregatedFinalTranscript };
         }
         let transcript = "";
@@ -2025,7 +2874,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
                 const alt = lastFinal[i] && lastFinal[i].transcript;
                 if (alt) {
                     if (i === 0) transcript = alt;
-                    if (normalizeForComparison(alt) === expected) {
+                    if (isVoiceMatch(expected, alt)) {
                         match = true;
                         if (!transcript) transcript = alt;
                         break;
@@ -2033,7 +2882,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
                 }
             }
             if (!match && transcript) {
-                match = expected === normalizeForComparison(transcript);
+                match = isVoiceMatch(expected, transcript);
             }
         }
         return { match, transcript: transcript || aggregatedFinalTranscript };
@@ -2118,8 +2967,7 @@ function getIncompleteReviewItemCount(session) {
     const count = session?.items?.length ?? 0;
     let incomplete = 0;
     for (let idx = 0; idx < count; idx++) {
-        const li = document.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
-        if (!li?.classList.contains("review-sentence-item-completed")) incomplete++;
+        if (!state.reviewCompletedItems[idx]) incomplete++;
     }
     return incomplete;
 }
@@ -2141,6 +2989,11 @@ async function completeOpenReviewSession() {
             const done = () => {
                 if (navigated) return;
                 navigated = true;
+                if (state.minimizedSessionId === session.id) {
+                    state.minimizedSessionId = null;
+                    state.minimizedSession = null;
+                }
+                clearReviewSessionProgress(session.id);
                 state.view = "dashboard";
                 state.openSessionId = null;
                 state.openSession = null;
@@ -2154,6 +3007,11 @@ async function completeOpenReviewSession() {
             });
             setTimeout(done, 500);
         } else {
+            if (state.minimizedSessionId === session.id) {
+                state.minimizedSessionId = null;
+                state.minimizedSession = null;
+            }
+            clearReviewSessionProgress(session.id);
             state.view = "dashboard";
             state.openSessionId = null;
             state.openSession = null;
@@ -2187,6 +3045,7 @@ async function updateReviewItemStageDisplay(session, idx) {
 function advanceReviewStage(session, idx) {
     const current = state.reviewSpeakCheckStage[idx] ?? 1;
     if (current === 3) {
+        state.reviewCompletedItems[idx] = true;
         const li = document.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
         if (li) li.classList.add("review-sentence-item-completed");
     }
@@ -2248,7 +3107,7 @@ async function updateTestReviewStageDisplay(sentence) {
 }
 
 function openTestReviewPopup(sentenceId) {
-    const sentence = state.sentences.find((s) => s.id === sentenceId);
+    const sentence = findSentenceById(sentenceId);
     if (!sentence || !sentence.content) return;
 
     state.testReviewStage = 1;
@@ -2313,6 +3172,46 @@ function openTestReviewPopup(sentenceId) {
     testReviewPopupEl.classList.add("is-open");
 }
 
+function buildSessionPreviewHtml(items) {
+    const sentences = (items || [])
+        .map((it) => (it && it.content ? String(it.content).trim() : ""))
+        .filter((s) => s);
+    if (sentences.length === 0) {
+        return "<div class='pending-review-preview-line hint'>(no sentences)</div>";
+    }
+    let lines;
+    if (sentences.length <= 4) {
+        lines = sentences.map((s) => escapeHtml(s));
+    } else {
+        lines = [
+            escapeHtml(sentences[0]),
+            escapeHtml(sentences[1]),
+            "…",
+            escapeHtml(sentences[sentences.length - 2]),
+            escapeHtml(sentences[sentences.length - 1]),
+        ];
+    }
+    return lines
+        .map((line) => line === "…"
+            ? "<div class='pending-review-preview-line pending-review-preview-ellipsis'>…</div>"
+            : `<div class="pending-review-preview-line">${line}</div>`)
+        .join("");
+}
+
+async function openPendingSession(session) {
+    if (!session || !session.id) return;
+    try {
+        await api.openReviewSession(session.id);
+    } catch (e) {
+        notify(e.message || "Could not open review session.");
+        return;
+    }
+    state.view = "reviewSession";
+    state.openSessionId = session.id;
+    state.openSession = session;
+    renderApp();
+}
+
 async function renderPendingReviews() {
     const container = document.getElementById("pendingReviews");
     if (!container) {
@@ -2322,16 +3221,17 @@ async function renderPendingReviews() {
     const showReminderHint = dueUnread.length > 0 && typeof Notification !== "undefined" && Notification.permission !== "granted";
     container.innerHTML = state.pendingSessions.length === 0
         ? "<p class='hint'>No pending review sessions.</p>"
-        : state.pendingSessions.map((session) => html`
-            <div class="card pending-review-item">
+        : state.pendingSessions.map((session, index) => html`
+            <div class="card pending-review-item pending-review-color-${index % 5}">
               <div class="pending-review-info">
-                <div class="pending-review-title"><b>Session ${session.id}</b></div>
+                <div class="pending-review-preview">${buildSessionPreviewHtml(session.items)}</div>
                 <div class="pending-review-meta">
                   ${new Date(session.startAt).toLocaleString()} (${session.items.length} sentences)
+                  ${isWeeklyCatchUpSession(session) ? " • Weekly catch-up" : ""}
                 </div>
               </div>
               <div class="pending-review-actions">
-                <button data-session-open="${session.id}" class="secondary">Open</button>
+                <button data-session-open="${session.id}" class="secondary">${isWeeklyCatchUpSession(session) ? "Open catch-up" : "Open"}</button>
                 <button data-session-complete="${session.id}">Mark reviewed</button>
               </div>
             </div>
@@ -2347,16 +3247,7 @@ async function renderPendingReviews() {
             const id = Number(button.getAttribute("data-session-open"));
             const session = state.pendingSessions.find((item) => item.id === id);
             if (!session) return;
-            try {
-                await api.openReviewSession(id);
-            } catch (e) {
-                notify(e.message);
-                return;
-            }
-            state.view = "reviewSession";
-            state.openSessionId = id;
-            state.openSession = session;
-            renderApp();
+            openPendingSession(session);
         });
     });
     container.querySelectorAll("[data-session-complete]").forEach((button) => {
@@ -2484,24 +3375,6 @@ function closeIncompleteReviewWarningPopup() {
 }
 
 function bindDashboardActions() {
-    const scrollWindowToTop = () => {
-        const detail = document.querySelector(".dashboard-list-detail");
-        if (detail) detail.scrollIntoView({ block: "start", inline: "nearest" });
-
-        const root = document.scrollingElement || document.documentElement;
-        const applyTopScroll = () => {
-            window.scrollTo(0, 0);
-            if (root) root.scrollTop = 0;
-            document.documentElement.scrollTop = 0;
-            document.body.scrollTop = 0;
-        };
-
-        applyTopScroll();
-        requestAnimationFrame(() => requestAnimationFrame(applyTopScroll));
-        setTimeout(applyTopScroll, 0);
-        setTimeout(applyTopScroll, 60);
-    };
-
     const createListBtn = document.getElementById("createListBtn");
     if (createListBtn) {
         createListBtn.addEventListener("click", async () => {
@@ -2513,50 +3386,7 @@ function bindDashboardActions() {
         });
     }
 
-    document.querySelectorAll("[data-list-open]").forEach((button) => {
-        button.addEventListener("click", async () => {
-            state.openedListFromMindMap = false;
-            state.restoreMindMapFullscreen = false;
-            const listId = Number(button.getAttribute("data-list-open"));
-            state.selectedListId = listId;
-            state.justOpenedListId = listId;
-            await refreshAndRender({ includePendingReviews: false });
-            scrollWindowToTop();
-        });
-    });
-    document.querySelectorAll(".list-item-main").forEach((el) => {
-        el.addEventListener("click", async () => {
-            const li = el.closest(".list-item");
-            const listId = li ? Number(li.getAttribute("data-list-id")) : null;
-            if (listId == null) return;
-            state.openedListFromMindMap = false;
-            state.restoreMindMapFullscreen = false;
-            state.selectedListId = listId;
-            state.justOpenedListId = listId;
-            await refreshAndRender({ includePendingReviews: false });
-            scrollWindowToTop();
-        });
-        el.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                el.click();
-            }
-        });
-    });
-    document.querySelectorAll("[data-list-rename]").forEach((button) => {
-        button.addEventListener("click", () => {
-            const listId = Number(button.getAttribute("data-list-rename"));
-            const list = state.lists.find((l) => l.id === listId);
-            showListActionPopup("rename", listId, list ? list.name : "");
-        });
-    });
-    document.querySelectorAll("[data-list-delete]").forEach((button) => {
-        button.addEventListener("click", () => {
-            const listId = Number(button.getAttribute("data-list-delete"));
-            const list = state.lists.find((l) => l.id === listId);
-            showListActionPopup("delete", listId, list ? list.name : "");
-        });
-    });
+    bindListItemActions();
 
     const addSentenceBtn = document.getElementById("addSentenceBtn");
     if (addSentenceBtn) {
@@ -2601,7 +3431,7 @@ function bindDashboardActions() {
     document.querySelectorAll("[data-sentence-playphrase]").forEach((button) => {
         button.addEventListener("click", () => {
             const sentenceId = Number(button.getAttribute("data-sentence-playphrase"));
-            const sentence = state.sentences.find((s) => s.id === sentenceId);
+            const sentence = findSentenceById(sentenceId);
             openPlayphrasePopup(sentence ? sentence.content : "");
         });
     });
@@ -2609,13 +3439,21 @@ function bindDashboardActions() {
     document.querySelectorAll("[data-sentence-youglish]").forEach((button) => {
         button.addEventListener("click", () => {
             const sentenceId = Number(button.getAttribute("data-sentence-youglish"));
-            const sentence = state.sentences.find((s) => s.id === sentenceId);
+            const sentence = findSentenceById(sentenceId);
             openYouglish(sentence ? sentence.content : "");
         });
     });
 
-    document.querySelectorAll("[data-sentence-grammar]").forEach((button) => {
-        button.addEventListener("click", () => sentenceGrammar(Number(button.getAttribute("data-sentence-grammar"))));
+    document.querySelectorAll("[data-sentence-group]").forEach((button) => {
+        button.addEventListener("click", () => {
+            openMeaningGroupForSentence(Number(button.getAttribute("data-sentence-group")));
+        });
+    });
+
+    document.querySelectorAll("[data-sentence-unlink]").forEach((button) => {
+        button.addEventListener("click", () => {
+            sentenceUnlink(Number(button.getAttribute("data-sentence-unlink")));
+        });
     });
 
     document.querySelectorAll("[data-sentence-test-review]").forEach((button) => {

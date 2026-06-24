@@ -85,5 +85,17 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ text, language })
     }),
-    grammarConfigured: () => request("/grammar/configured")
+    grammarConfigured: () => request("/grammar/configured"),
+
+    getMeaningGroups: () => request("/meaning-groups"),
+    getMeaningGroup: (groupId) => request(`/meaning-groups/${groupId}`),
+    createMeaningGroup: (payload) => request("/meaning-groups", { method: "POST", body: JSON.stringify(payload) }),
+    updateMeaningGroup: (groupId, payload) => request(`/meaning-groups/${groupId}`, { method: "PUT", body: JSON.stringify(payload) }),
+    deleteMeaningGroup: (groupId) => request(`/meaning-groups/${groupId}`, { method: "DELETE" }),
+    getMeaningGroupSentences: (groupId) => request(`/meaning-groups/${groupId}/sentences`),
+    getSentenceVariants: (sentenceId) => request(`/sentences/${sentenceId}/variants`),
+    assignSentenceToMeaningGroup: (sentenceId, payload) =>
+        request(`/sentences/${sentenceId}/meaning-group`, { method: "PUT", body: JSON.stringify(payload) }),
+    unassignSentenceFromMeaningGroup: (sentenceId) =>
+        request(`/sentences/${sentenceId}/meaning-group`, { method: "DELETE" })
 };

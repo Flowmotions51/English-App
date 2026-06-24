@@ -31,6 +31,10 @@ public class ReviewSession {
     @Column(nullable = false)
     private ReviewSessionStatus status = ReviewSessionStatus.PENDING;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "kind", nullable = false)
+    private ReviewSessionKind kind = ReviewSessionKind.REGULAR;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
 

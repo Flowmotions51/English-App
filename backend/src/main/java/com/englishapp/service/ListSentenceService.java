@@ -11,7 +11,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.englishapp.model.MeaningGroup;
+
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -187,23 +190,28 @@ public class ListSentenceService {
     }
 
     public Map<String, Object> sentencePayload(Sentence sentence, long reviewCount) {
-        return Map.<String, Object>of(
-                "id", sentence.getId(),
-                "listId", sentence.getSentenceList().getId(),
-                "content", sentence.getContent(),
-                "createdAt", sentence.getCreatedAt(),
-                "reviewCount", reviewCount
-        );
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("id", sentence.getId());
+        payload.put("listId", sentence.getSentenceList().getId());
+        payload.put("content", sentence.getContent());
+        payload.put("createdAt", sentence.getCreatedAt());
+        payload.put("reviewCount", reviewCount);
+        MeaningGroup meaningGroup = sentence.getMeaningGroup();
+        if (meaningGroup != null) {
+            payload.put("meaningGroupId", meaningGroup.getId());
+            payload.put("meaningGroupLabel", meaningGroup.getLabel());
+            payload.put("variantCount", sentenceRepository.countByMeaningGroup_Id(meaningGroup.getId()));
+        } else {
+            payload.put("meaningGroupId", null);
+            payload.put("meaningGroupLabel", null);
+            payload.put("variantCount", 0L);
+        }
+        return payload;
     }
 
     private Map<String, Object> sentencePayloadWithListName(Sentence sentence, long reviewCount) {
-        return Map.<String, Object>of(
-                "id", sentence.getId(),
-                "listId", sentence.getSentenceList().getId(),
-                "listName", sentence.getSentenceList().getName(),
-                "content", sentence.getContent(),
-                "createdAt", sentence.getCreatedAt(),
-                "reviewCount", reviewCount
-        );
+        Map<String, Object> payload = new HashMap<>(sentencePayload(sentence, reviewCount));
+        payload.put("listName", sentence.getSentenceList().getName());
+        return payload;
     }
 }
