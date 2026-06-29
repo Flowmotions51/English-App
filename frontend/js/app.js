@@ -288,6 +288,7 @@ async function getNlp() {
 async function getSentenceWithVerbsHidden(text) {
     if (!text || typeof text !== "string") return "";
     try {
+        text = text.replace(/-/g, ""); /** Fixed HIDDEN froblem **/
         const nlp = await getNlp();
         const doc = nlp(text);
         const verbs = doc.verbs();
@@ -2288,23 +2289,29 @@ function buildReviewSessionItemsHtml(items) {
             idx += 1;
             continue;
         }
-        const groupLabel = (item.meaningGroupLabel && String(item.meaningGroupLabel).trim())
-            ? escapeHtml(item.meaningGroupLabel)
-            : "Same meaning";
-        const tintClass = getMeaningGroupTintClass(groupId);
-        const groupItems = [];
-        while (idx < items.length && items[idx].meaningGroupId === groupId) {
-            groupItems.push(renderReviewSentenceItemHtml(items[idx], idx, groupId));
-            idx += 1;
+        const groupRun = [];
+        let scan = idx;
+        while (scan < items.length && items[scan].meaningGroupId === groupId) {
+            groupRun.push({ item: items[scan], index: scan });
+            scan += 1;
         }
-        parts.push(html`
-          <li class="review-meaning-group ${tintClass}">
-            <div class="hint review-meaning-group-label">${groupLabel}</div>
-            <ol class="review-meaning-group-list">
-              ${groupItems.join("")}
-            </ol>
-          </li>
-        `);
+        if (groupRun.length < 2) {
+            parts.push(renderReviewSentenceItemHtml(groupRun[0].item, groupRun[0].index));
+        } else {
+            const groupLabel = (groupRun[0].item.meaningGroupLabel && String(groupRun[0].item.meaningGroupLabel).trim())
+                ? escapeHtml(groupRun[0].item.meaningGroupLabel)
+                : "Same meaning";
+            const tintClass = getMeaningGroupTintClass(groupId);
+            parts.push(html`
+              <li class="review-meaning-group ${tintClass}">
+                <div class="hint review-meaning-group-label">${groupLabel}</div>
+                <ol class="review-meaning-group-list">
+                  ${groupRun.map(({ item: runItem, index: runIdx }) => renderReviewSentenceItemHtml(runItem, runIdx, groupId)).join("")}
+                </ol>
+              </li>
+            `);
+        }
+        idx = scan;
     }
     return parts.join("");
 }
@@ -2662,7 +2669,8 @@ const EN_HOMOPHONE_GROUPS = [
     ["sea", "see"],
     ["be", "bee"],
     ["break", "brake"],
-    ["our", "hour"]
+    ["our", "hour"],
+    ["tart", "taut", "taught"]
 ];
 const EN_HOMOPHONE_INDEX = {};
 EN_HOMOPHONE_GROUPS.forEach((group, idx) => {
