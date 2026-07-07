@@ -37,6 +37,11 @@ const state = {
     globalSearchDebounce: null,
     globalSearchLoading: false,
     globalSearchRequestId: 0,
+    statsOverview: null,
+    statsLoading: false,
+    statsError: null,
+    sentenceStatsLoadingId: null,
+    voiceAttemptCountBySentenceId: {},
     sentencesPage: 0,
     sentencesHasMore: false,
     sentencesLoading: false,
@@ -74,11 +79,14 @@ const state = {
     mindMapPinchStartScale: 1,
     /** @type {{ [idx: number]: number }} stage 1=full, 2=verbs hidden, 3=all hidden */
     reviewSpeakCheckStage: {},
+    /** @type {{ [idx: number]: number }} current sentence/clause part inside a review item */
+    reviewSpeakCheckPart: {},
     /** @type {{ [idx: number]: boolean }} */
     reviewCompletedItems: {},
-    /** @type {{ [sessionId: string]: { stages: { [idx: number]: number }, completed: { [idx: number]: boolean } } }} */
+    /** @type {{ [sessionId: string]: { stages: { [idx: number]: number }, parts: { [idx: number]: number }, completed: { [idx: number]: boolean } } }} */
     reviewSessionProgressById: {},
     testReviewStage: 1,
+    testReviewPart: 0,
     /** 'forgot' | 'signup-language' | 'signup-credentials' | null when on auth screen */
     authView: null,
     authMessage: null,
@@ -140,17 +148,23 @@ function createReviewSessionProgress(session) {
     for (let idx = 0; idx < itemCount; idx++) {
         stages[idx] = 1;
     }
-    return { stages, completed: {} };
+    return { stages, parts: {}, completed: {} };
 }
 
 function normalizeReviewSessionProgress(progress, itemCount) {
     if (!progress || itemCount < 0) return;
+    if (!progress.parts) progress.parts = {};
     for (let idx = 0; idx < itemCount; idx++) {
         if (progress.stages[idx] == null) progress.stages[idx] = 1;
+        if (progress.parts[idx] == null) progress.parts[idx] = 0;
     }
     Object.keys(progress.stages).forEach((key) => {
         const idx = Number(key);
         if (Number.isNaN(idx) || idx >= itemCount) delete progress.stages[key];
+    });
+    Object.keys(progress.parts).forEach((key) => {
+        const idx = Number(key);
+        if (Number.isNaN(idx) || idx >= itemCount) delete progress.parts[key];
     });
     Object.keys(progress.completed).forEach((key) => {
         const idx = Number(key);
@@ -173,6 +187,7 @@ function getOrCreateReviewSessionProgress(session) {
 function loadReviewSessionProgress(session) {
     const progress = getOrCreateReviewSessionProgress(session);
     state.reviewSpeakCheckStage = progress.stages;
+    state.reviewSpeakCheckPart = progress.parts;
     state.reviewCompletedItems = progress.completed;
 }
 
@@ -614,6 +629,11 @@ function getListNameById(listId) {
     return list ? list.name : "";
 }
 
+function getSentenceListTitle(sentence) {
+    if (!sentence) return "";
+    return sentence.listName || getListNameById(sentence.listId) || "";
+}
+
 function findSentenceById(id) {
     const fromList = state.sentences.find((s) => s.id === id);
     if (fromList) return fromList;
@@ -827,6 +847,8 @@ function renderSentenceActionsHtml(sentence, options = {}) {
         <button type="button" data-sentence-playphrase="${sentence.id}" class="btn-icon secondary" title="Play phrase (playphrase.me)">▶️</button>
         <button type="button" data-sentence-youglish="${sentence.id}" class="btn-icon secondary" title="Pronounce (YouGlish)">🔤</button>
         <button type="button" data-sentence-test-review="${sentence.id}" class="btn-icon secondary" title="Test review">📋</button>
+        <button type="button" data-sentence-naturalness="${sentence.id}" class="btn-icon secondary" title="AI naturalness check">✨</button>
+        <button type="button" data-sentence-stats="${sentence.id}" class="btn-icon secondary" title="Stats">📈</button>
         <button type="button" data-sentence-group="${sentence.id}" class="btn-icon secondary" title="Open same meaning group${variantHint}">🔗</button>
         <button type="button" data-sentence-edit="${sentence.id}" class="btn-icon secondary" title="Edit">✏️</button>
         <button type="button" data-sentence-video="${sentence.id}" class="btn-icon secondary" title="Video links">🎬</button>
@@ -1099,6 +1121,70 @@ async function sentenceGrammar(id) {
     } catch (e) {
         showGrammarResultPopup(false, e.message || "Grammar check failed.");
     }
+}
+
+let naturalnessPopupEl = null;
+
+function closeNaturalnessPopup() {
+    if (naturalnessPopupEl) naturalnessPopupEl.classList.remove("is-open");
+}
+
+function showNaturalnessCheckPopup(feedback, loading = false, cached = false) {
+    if (!naturalnessPopupEl) {
+        naturalnessPopupEl = document.createElement("div");
+        naturalnessPopupEl.className = "sentence-action-popup-backdrop naturalness-popup-backdrop";
+        naturalnessPopupEl.innerHTML = `
+          <div class="sentence-action-popup naturalness-result-popup">
+            <h4 class="naturalness-result-title"></h4>
+            <div class="naturalness-result-feedback"></div>
+            <div class="popup-actions">
+              <button type="button" class="popup-close-naturalness secondary">Close</button>
+            </div>
+          </div>
+        `;
+        const popup = naturalnessPopupEl.querySelector(".naturalness-result-popup");
+        popup.style.left = "50%";
+        popup.style.top = "50%";
+        popup.style.transform = "translate(-50%, -50%)";
+        naturalnessPopupEl.addEventListener("click", (e) => { if (e.target === naturalnessPopupEl) closeNaturalnessPopup(); });
+        naturalnessPopupEl.querySelector(".popup-close-naturalness").addEventListener("click", closeNaturalnessPopup);
+        document.body.appendChild(naturalnessPopupEl);
+    }
+    const titleEl = naturalnessPopupEl.querySelector(".naturalness-result-title");
+    const feedbackEl = naturalnessPopupEl.querySelector(".naturalness-result-feedback");
+    const actionsEl = naturalnessPopupEl.querySelector(".popup-actions");
+    if (loading) {
+        titleEl.textContent = "Checking naturalness…";
+        feedbackEl.textContent = "";
+        feedbackEl.style.display = "none";
+        actionsEl.style.display = "none";
+    } else {
+        titleEl.textContent = cached ? "AI naturalness check (cached)" : "AI naturalness check";
+        feedbackEl.textContent = feedback || "";
+        feedbackEl.style.display = feedback ? "block" : "none";
+        actionsEl.style.display = "flex";
+    }
+    naturalnessPopupEl.classList.add("is-open");
+}
+
+async function checkNaturalnessForText(text, listTitle = "") {
+    const sentence = (text || "").trim();
+    if (!sentence) {
+        notify("No sentence text to check.");
+        return;
+    }
+    showNaturalnessCheckPopup("", true);
+    try {
+        const result = await api.checkNaturalness(sentence, getAppLanguage(), listTitle);
+        showNaturalnessCheckPopup(result.feedback || "No feedback returned.", false, !!result.cached);
+    } catch (e) {
+        showNaturalnessCheckPopup(e.message || "AI naturalness check failed.");
+    }
+}
+
+async function sentenceNaturalness(id) {
+    const sentence = findSentenceById(id);
+    await checkNaturalnessForText(sentence ? sentence.content : "", getSentenceListTitle(sentence));
 }
 
 let sentenceActionPopupEl = null;
@@ -1872,6 +1958,295 @@ function scrollJumpTo(edge) {
     window.scrollTo({ top, behavior: "smooth" });
 }
 
+function formatStatsNumber(value) {
+    return Number(value || 0).toLocaleString();
+}
+
+function formatStatsPercent(value) {
+    return `${Number(value || 0).toFixed(1).replace(/\.0$/, "")}%`;
+}
+
+function formatStatsTry(value) {
+    const n = Number(value || 0);
+    return n > 0 ? n.toFixed(1).replace(/\.0$/, "") : "—";
+}
+
+function formatStatsDate(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+}
+
+function buildStatsMetricCards(metrics) {
+    return html`
+      <div class="stats-metric-grid">
+        ${metrics.map((metric) => html`
+          <div class="stats-metric">
+            <div class="stats-metric-value">${escapeHtml(String(metric.value))}</div>
+            <div class="stats-metric-label">${escapeHtml(metric.label)}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+}
+
+function buildStatsTimelineChart(points, title = "Review activity") {
+    const data = Array.isArray(points) ? points : [];
+    if (!data.length) return `<div class="hint">No chart data yet.</div>`;
+
+    const width = 760;
+    const height = 280;
+    const left = 58;
+    const right = 22;
+    const top = 24;
+    const bottom = 52;
+    const chartWidth = width - left - right;
+    const chartHeight = height - top - bottom;
+    const maxReviewed = Math.max(1, ...data.map((p) => Number(p.reviewed) || 0));
+    const step = chartWidth / data.length;
+    const barWidth = Math.max(4, Math.min(16, step * 0.62));
+    const todayLabelIndexes = new Set([0, Math.floor((data.length - 1) / 2), data.length - 1]);
+
+    const bars = data.map((p, i) => {
+        const reviewed = Number(p.reviewed) || 0;
+        const barHeight = Math.round((reviewed / maxReviewed) * chartHeight);
+        const x = left + i * step + (step - barWidth) / 2;
+        const y = top + chartHeight - barHeight;
+        const fill = reviewed > 0 ? "rgb(125, 99, 255)" : "rgb(220, 212, 255)";
+        const label = `${p.date}: ${reviewed} sentence${reviewed === 1 ? "" : "s"}`;
+        return `<rect x="${x.toFixed(1)}" y="${y}" width="${barWidth.toFixed(1)}" height="${barHeight}" rx="3" fill="${fill}"><title>${escapeHtml(label)}</title></rect>`;
+    }).join("");
+
+    const labels = data.map((p, i) => {
+        if (!todayLabelIndexes.has(i)) return "";
+        const x = left + i * step + step / 2;
+        const label = String(p.date || "").slice(5);
+        return `<text x="${x.toFixed(1)}" y="${height - 18}" text-anchor="middle" class="stats-chart-label">${escapeHtml(label)}</text>`;
+    }).join("");
+
+    const yMid = Math.ceil(maxReviewed / 2);
+    return html`
+      <svg class="stats-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}">
+        <rect x="0" y="0" width="${width}" height="${height}" rx="8" fill="#fff"></rect>
+        <text x="${left}" y="18" class="stats-chart-title">${escapeHtml(title)}</text>
+        <line x1="${left}" y1="${top}" x2="${left}" y2="${top + chartHeight}" class="stats-chart-axis"></line>
+        <line x1="${left}" y1="${top + chartHeight}" x2="${left + chartWidth}" y2="${top + chartHeight}" class="stats-chart-axis"></line>
+        <line x1="${left}" y1="${top + chartHeight / 2}" x2="${left + chartWidth}" y2="${top + chartHeight / 2}" class="stats-chart-grid"></line>
+        <text x="16" y="${top + chartHeight / 2}" class="stats-chart-label">${yMid}</text>
+        <text x="16" y="${top + chartHeight + 4}" class="stats-chart-label">0</text>
+        <text x="14" y="${top + 8}" class="stats-chart-label">${maxReviewed}</text>
+        <text x="18" y="${top + chartHeight / 2}" transform="rotate(-90 18 ${top + chartHeight / 2})" text-anchor="middle" class="stats-chart-label">sentences</text>
+        <text x="${left + chartWidth / 2}" y="${height - 2}" text-anchor="middle" class="stats-chart-label">time</text>
+        ${bars}
+        ${labels}
+      </svg>
+    `;
+}
+
+function buildAttemptDistributionChart(points, title = "Successful pronunciation by try") {
+    const data = (Array.isArray(points) ? points : []).filter((p) => Number(p.count) > 0);
+    if (!data.length) return `<div class="hint">No successful pronunciation attempts yet.</div>`;
+
+    const width = 520;
+    const height = 220;
+    const left = 52;
+    const right = 18;
+    const top = 24;
+    const bottom = 42;
+    const chartWidth = width - left - right;
+    const chartHeight = height - top - bottom;
+    const maxCount = Math.max(1, ...data.map((p) => Number(p.count) || 0));
+    const step = chartWidth / data.length;
+    const barWidth = Math.max(18, Math.min(44, step * 0.58));
+
+    const bars = data.map((p, i) => {
+        const count = Number(p.count) || 0;
+        const attemptNumber = Number(p.attemptNumber) || i + 1;
+        const barHeight = Math.round((count / maxCount) * chartHeight);
+        const x = left + i * step + (step - barWidth) / 2;
+        const y = top + chartHeight - barHeight;
+        const fill = attemptNumber === 1 ? "rgb(86, 214, 122)" : (attemptNumber === 2 ? "rgb(254, 178, 178)" : "rgb(234, 88, 12)");
+        return html`
+          <rect x="${x.toFixed(1)}" y="${y}" width="${barWidth.toFixed(1)}" height="${barHeight}" rx="5" fill="${fill}">
+            <title>Try ${attemptNumber}: ${count}</title>
+          </rect>
+          <text x="${(x + barWidth / 2).toFixed(1)}" y="${height - 18}" text-anchor="middle" class="stats-chart-label">Try ${attemptNumber}</text>
+        `;
+    }).join("");
+
+    return html`
+      <svg class="stats-chart stats-chart-compact" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(title)}">
+        <rect x="0" y="0" width="${width}" height="${height}" rx="8" fill="#fff"></rect>
+        <text x="${left}" y="18" class="stats-chart-title">${escapeHtml(title)}</text>
+        <line x1="${left}" y1="${top}" x2="${left}" y2="${top + chartHeight}" class="stats-chart-axis"></line>
+        <line x1="${left}" y1="${top + chartHeight}" x2="${left + chartWidth}" y2="${top + chartHeight}" class="stats-chart-axis"></line>
+        <text x="14" y="${top + 8}" class="stats-chart-label">${maxCount}</text>
+        <text x="16" y="${top + chartHeight + 4}" class="stats-chart-label">0</text>
+        ${bars}
+      </svg>
+    `;
+}
+
+function renderStatsPanelHtml() {
+    if (state.statsError) {
+        return html`
+          <h3>Stats</h3>
+          <p class="hint">${escapeHtml(state.statsError)}</p>
+          <button type="button" id="retryStatsBtn" class="secondary">Retry</button>
+        `;
+    }
+    if (!state.statsOverview) {
+        return html`
+          <h3>Stats</h3>
+          <p class="hint">Loading stats…</p>
+        `;
+    }
+
+    const summary = state.statsOverview.summary || {};
+    return html`
+      <h3>Stats</h3>
+      ${buildStatsMetricCards([
+        { label: "Reviewed today", value: formatStatsNumber(summary.reviewedToday) },
+        { label: "This week", value: formatStatsNumber(summary.reviewedThisWeek) },
+        { label: "This month", value: formatStatsNumber(summary.reviewedThisMonth) },
+        { label: "Longest streak", value: `${formatStatsNumber(summary.longestStreakDays)}d` },
+        { label: "Success rate", value: formatStatsPercent(summary.successRate) },
+        { label: "Avg. correct try", value: formatStatsTry(summary.averageSuccessfulTry) }
+      ])}
+      <div class="stats-chart-panel">
+        ${buildStatsTimelineChart(state.statsOverview.timeline, "Sentences reviewed over time")}
+      </div>
+      <div class="stats-chart-panel">
+        ${buildAttemptDistributionChart(state.statsOverview.attemptDistribution)}
+      </div>
+    `;
+}
+
+async function ensureStatsOverviewLoaded(force = false) {
+    if (state.statsLoading) return;
+    if (!force && state.statsOverview) return;
+    state.statsLoading = true;
+    state.statsError = null;
+    try {
+        state.statsOverview = await api.getStatsOverview();
+    } catch (err) {
+        state.statsError = err.message || "Failed to load stats.";
+    } finally {
+        state.statsLoading = false;
+        if (state.view === "dashboard" && !state.selectedListId && state.currentSection === 4) {
+            renderApp();
+        }
+    }
+}
+
+function getNextVoiceAttemptNumber(sentenceId) {
+    if (!sentenceId) return 1;
+    const key = String(sentenceId);
+    const next = (Number(state.voiceAttemptCountBySentenceId[key]) || 0) + 1;
+    state.voiceAttemptCountBySentenceId[key] = next;
+    return next;
+}
+
+function resetVoiceAttemptNumber(sentenceId) {
+    if (!sentenceId) return;
+    delete state.voiceAttemptCountBySentenceId[String(sentenceId)];
+}
+
+function recordVoiceCheckStats(stats, match) {
+    if (!stats || !stats.sentenceId) return;
+    api.recordPronunciationAttempt({
+        sentenceId: stats.sentenceId,
+        reviewSessionId: stats.reviewSessionId || null,
+        successful: !!match,
+        attemptNumber: stats.attemptNumber || 1,
+        stage: stats.stage || null,
+        partIndex: stats.partIndex ?? null,
+        partCount: stats.partCount ?? null,
+        source: stats.source || "REVIEW"
+    }).then(() => {
+        state.statsOverview = null;
+    }).catch(() => {
+        // Stats are useful, but failed logging should not interrupt review flow.
+    });
+}
+
+let sentenceStatsPopupEl = null;
+
+function ensureSentenceStatsPopup() {
+    if (sentenceStatsPopupEl) return sentenceStatsPopupEl;
+    sentenceStatsPopupEl = document.createElement("div");
+    sentenceStatsPopupEl.className = "sentence-action-popup-backdrop sentence-stats-popup-backdrop";
+    sentenceStatsPopupEl.innerHTML = '<div class="sentence-action-popup sentence-stats-popup"></div>';
+    sentenceStatsPopupEl.addEventListener("click", (e) => {
+        if (e.target === sentenceStatsPopupEl) closeSentenceStatsPopup();
+    });
+    document.body.appendChild(sentenceStatsPopupEl);
+    return sentenceStatsPopupEl;
+}
+
+function closeSentenceStatsPopup() {
+    if (sentenceStatsPopupEl) sentenceStatsPopupEl.classList.remove("is-open");
+}
+
+function renderSentenceStatsPopupContent(stats) {
+    const sentence = stats?.sentence || {};
+    const summary = stats?.summary || {};
+    return html`
+      <h4>Sentence stats</h4>
+      <p class="sentence-stats-content">${renderSentenceWithWordLinks(sentence.content || "")}</p>
+      <div class="hint">in ${escapeHtml(sentence.listName || "")}</div>
+      ${buildStatsMetricCards([
+        { label: "Total reviews", value: formatStatsNumber(summary.reviewCount) },
+        { label: "Last 30 days", value: formatStatsNumber(summary.reviewsLast30Days) },
+        { label: "Last reviewed", value: formatStatsDate(summary.lastReviewedAt) },
+        { label: "Success rate", value: formatStatsPercent(summary.successRate) },
+        { label: "Successful tries", value: `${formatStatsNumber(summary.successfulAttempts)} / ${formatStatsNumber(summary.attemptsTotal)}` },
+        { label: "Avg. correct try", value: formatStatsTry(summary.averageSuccessfulTry) }
+      ])}
+      <div class="stats-chart-panel">
+        ${buildStatsTimelineChart(stats.timeline, "Sentence reviews over time")}
+      </div>
+      <div class="stats-chart-panel">
+        ${buildAttemptDistributionChart(stats.attemptDistribution, "Sentence pronunciation by try")}
+      </div>
+      <div class="popup-actions">
+        <button type="button" class="secondary sentence-stats-close">Close</button>
+      </div>
+    `;
+}
+
+async function openSentenceStatsPopup(sentenceId) {
+    if (!sentenceId) return;
+    const wrap = ensureSentenceStatsPopup();
+    const popup = wrap.querySelector(".sentence-stats-popup");
+    popup.innerHTML = `
+      <h4>Sentence stats</h4>
+      <p class="hint">Loading stats…</p>
+      <div class="popup-actions">
+        <button type="button" class="secondary sentence-stats-close">Close</button>
+      </div>
+    `;
+    popup.querySelector(".sentence-stats-close").addEventListener("click", closeSentenceStatsPopup);
+    wrap.classList.add("is-open");
+    state.sentenceStatsLoadingId = sentenceId;
+    try {
+        const stats = await api.getSentenceStats(sentenceId);
+        if (state.sentenceStatsLoadingId !== sentenceId) return;
+        popup.innerHTML = renderSentenceStatsPopupContent(stats);
+        popup.querySelector(".sentence-stats-close").addEventListener("click", closeSentenceStatsPopup);
+    } catch (err) {
+        if (state.sentenceStatsLoadingId !== sentenceId) return;
+        popup.innerHTML = `
+          <h4>Sentence stats</h4>
+          <p class="hint">${escapeHtml(err.message || "Failed to load sentence stats.")}</p>
+          <div class="popup-actions">
+            <button type="button" class="secondary sentence-stats-close">Close</button>
+          </div>
+        `;
+        popup.querySelector(".sentence-stats-close").addEventListener("click", closeSentenceStatsPopup);
+    }
+}
+
 function renderApp() {
     renderUserBar();
     if (state.view === "reviewSession" && state.openSession) {
@@ -1891,6 +2266,7 @@ function renderApp() {
             <button type="button" class="dashboard-tab ${state.currentSection === 1 ? "active" : ""}" data-section="1" role="tab">Reviews</button>
             <button type="button" class="dashboard-tab ${state.currentSection === 2 ? "active" : ""}" data-section="2" role="tab">Settings</button>
             <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
+            <button type="button" class="dashboard-tab ${state.currentSection === 4 ? "active" : ""}" data-section="4" role="tab">Stats</button>
           </div>
         </div>
         ` : ""}
@@ -1976,6 +2352,9 @@ function renderApp() {
               <h3>Mind Map</h3>
               <p class="dashboard-coming-soon">Coming soon</p>
             </div>
+            <div class="dashboard-panel card stats-panel" data-section="4" style="display: ${state.currentSection === 4 ? "block" : "none"}">
+              ${renderStatsPanelHtml()}
+            </div>
           ` : ""}
         </div>
       </section>
@@ -1987,6 +2366,7 @@ function renderApp() {
     renderPendingReviews();
     bindLanguagePicker(document.getElementById("languageInputPicker"));
     if (MIND_MAP_ENABLED) renderMindMap();
+    if (!state.selectedListId && state.currentSection === 4) ensureStatsOverviewLoaded();
 
     if (state.selectedListId && state.justOpenedListId === state.selectedListId && !state.openMeaningGroupId) {
         const listDetail = appEl.querySelector(".dashboard-list-detail");
@@ -2183,6 +2563,9 @@ function bindDashboardTabs() {
             if (section === 3 && MIND_MAP_ENABLED) {
                 renderMindMap();
             }
+            if (section === 4) {
+                ensureStatsOverviewLoaded();
+            }
             updateScrollJumpControlsVisibility();
         });
     });
@@ -2263,19 +2646,44 @@ function bindDashboardTabs() {
 
 function renderReviewSentenceItemHtml(item, idx, groupId) {
     const tintClass = groupId ? getMeaningGroupTintClass(groupId) : "";
+    const listTitle = getSentenceListTitle(item);
     return html`
       <li class="review-sentence-item ${tintClass}" data-review-idx="${idx}">
         <div class="review-sentence-main">
-          <div class="review-sentence-content">${renderSentenceWithWordLinks(item.content)}</div>
+          <div class="review-sentence-copy">
+            <div class="review-sentence-content">${renderSentenceWithWordLinks(item.content)}</div>
+            ${listTitle ? `<div class="hint review-sentence-list-name"><button type="button" class="review-context-reveal" data-review-context-idx="${idx}">Look up the context</button></div>` : ""}
+          </div>
           <div class="review-sentence-buttons">
-            <button type="button" class="btn-icon secondary review-edit" data-review-edit-idx="${idx}" title="Edit">✏</button>
             <button type="button" class="btn-icon secondary review-speak" data-review-speak-idx="${idx}" title="Listen">🔊</button>
+            <button type="button" class="btn-icon secondary review-naturalness" data-review-naturalness-idx="${idx}" title="AI naturalness check">✨</button>
             <button type="button" class="btn-icon secondary review-speak-check stage-1" data-review-speak-check-idx="${idx}" title="Speak and check (stage 1: full sentence)">🎤</button>
+            <button type="button" class="secondary review-more-toggle" data-review-more-idx="${idx}" aria-expanded="false" aria-controls="review-extra-actions-${idx}" title="Show more actions">More</button>
+            <div class="review-extra-actions" id="review-extra-actions-${idx}" aria-hidden="true">
+              <button type="button" class="btn-icon secondary review-edit" data-review-edit-idx="${idx}" title="Edit" tabindex="-1">✏</button>
+              <button type="button" class="btn-icon secondary review-playphrase" data-review-playphrase-idx="${idx}" title="Play phrase (playphrase.me)" tabindex="-1">▶️</button>
+              <button type="button" class="btn-icon secondary review-youglish" data-review-youglish-idx="${idx}" title="Pronounce (YouGlish)" tabindex="-1">🔤</button>
+            </div>
           </div>
         </div>
         <div class="review-voice-result" data-review-voice-idx="${idx}" aria-live="polite"></div>
       </li>
     `;
+}
+
+function setReviewExtraActionsOpen(toggleButton, open) {
+    const controlsId = toggleButton?.getAttribute("aria-controls");
+    const actionsEl = controlsId ? document.getElementById(controlsId) : null;
+    if (!toggleButton || !actionsEl) return;
+
+    toggleButton.setAttribute("aria-expanded", open ? "true" : "false");
+    toggleButton.textContent = open ? "Less" : "More";
+    toggleButton.title = open ? "Hide more actions" : "Show more actions";
+    actionsEl.classList.toggle("is-open", open);
+    actionsEl.setAttribute("aria-hidden", open ? "false" : "true");
+    actionsEl.querySelectorAll("button").forEach((button) => {
+        button.tabIndex = open ? 0 : -1;
+    });
 }
 
 function buildReviewSessionItemsHtml(items) {
@@ -2397,6 +2805,49 @@ function renderReviewSessionPage() {
         });
     });
 
+    document.querySelectorAll("[data-review-context-idx]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const idx = parseInt(button.getAttribute("data-review-context-idx"), 10);
+            const item = session.items[idx];
+            const listTitle = getSentenceListTitle(item);
+            const container = button.closest(".review-sentence-list-name");
+            if (!container || !listTitle) return;
+            container.textContent = `in ${listTitle}`;
+            container.classList.add("is-revealed");
+        });
+    });
+
+    document.querySelectorAll("[data-review-more-idx]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const isOpen = button.getAttribute("aria-expanded") === "true";
+            setReviewExtraActionsOpen(button, !isOpen);
+        });
+    });
+
+    document.querySelectorAll("[data-review-playphrase-idx]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const idx = parseInt(button.getAttribute("data-review-playphrase-idx"), 10);
+            const item = session.items[idx];
+            openPlayphrasePopup(item ? item.content : "");
+        });
+    });
+
+    document.querySelectorAll("[data-review-youglish-idx]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const idx = parseInt(button.getAttribute("data-review-youglish-idx"), 10);
+            const item = session.items[idx];
+            openYouglish(item ? item.content : "");
+        });
+    });
+
+    document.querySelectorAll("[data-review-naturalness-idx]").forEach((button) => {
+        button.addEventListener("click", () => {
+            const idx = parseInt(button.getAttribute("data-review-naturalness-idx"), 10);
+            const item = session.items[idx];
+            checkNaturalnessForText(item ? item.content : "", getSentenceListTitle(item));
+        });
+    });
+
     document.querySelectorAll("[data-review-edit-idx]").forEach((button) => {
         button.addEventListener("click", () => {
             const idx = parseInt(button.getAttribute("data-review-edit-idx"), 10);
@@ -2438,6 +2889,7 @@ function renderReviewSessionPage() {
                 }
                 closeSentenceActionPopup();
                 session.items[idx].content = content;
+                state.reviewSpeakCheckPart[idx] = 0;
                 const row = appEl.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
                 const voiceEl = row?.querySelector(`.review-voice-result[data-review-voice-idx="${idx}"]`);
                 if (voiceEl) {
@@ -2781,8 +3233,154 @@ function estimateVoiceCheckPrepMs(sentenceContent) {
     return Math.round(Math.min(10000, Math.max(2000, 1600 + words * 380)));
 }
 
-function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
+function getReviewVoiceCheckParts(content) {
+    const text = String(content || "").trim();
+    if (!text) return [];
+    const parts = [];
+    let start = 0;
+    const boundaryRegex = /[;!?]+|\.(?=\s+|$)/g;
+    let match;
+
+    while ((match = boundaryRegex.exec(text)) !== null) {
+        const end = match.index + match[0].length;
+        const part = text.slice(start, end).trim();
+        if (normalizeForComparison(part)) parts.push(part);
+        start = end;
+    }
+
+    const tail = text.slice(start).trim();
+    if (normalizeForComparison(tail)) parts.push(tail);
+    return parts.length ? parts : [text];
+}
+
+function getReviewVoiceCheckPartIndex(parts, partIndex) {
+    const count = parts?.length || 0;
+    if (count <= 1) return 0;
+    const n = Number(partIndex);
+    if (!Number.isFinite(n)) return 0;
+    return Math.min(count - 1, Math.max(0, Math.trunc(n)));
+}
+
+function getReviewVoiceCheckPartLabel(parts, partIndex) {
+    return parts.length > 1 ? `Part ${partIndex + 1} of ${parts.length}` : "";
+}
+
+let reviewVoicePlaybackUrl = null;
+let reviewVoicePlaybackRequestId = 0;
+
+function clearReviewVoiceRecordingPlayback() {
+    document.querySelectorAll(".review-voice-playback").forEach((el) => {
+        const audio = el.querySelector("audio");
+        if (audio) {
+            audio.pause();
+            audio.removeAttribute("src");
+            try { audio.load(); } catch (_) { /* ignore */ }
+        }
+        el.remove();
+    });
+    if (reviewVoicePlaybackUrl) {
+        URL.revokeObjectURL(reviewVoicePlaybackUrl);
+        reviewVoicePlaybackUrl = null;
+    }
+}
+
+function getPreferredReviewRecordingMimeType() {
+    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+        return "";
+    }
+    return [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4"
+    ].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+async function startReviewVoiceRecording() {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") return null;
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const chunks = [];
+        const mimeType = getPreferredReviewRecordingMimeType();
+        const recorder = mimeType
+            ? new MediaRecorder(stream, { mimeType })
+            : new MediaRecorder(stream);
+        let stopPromise = null;
+
+        recorder.addEventListener("dataavailable", (event) => {
+            if (event.data && event.data.size > 0) chunks.push(event.data);
+        });
+        recorder.start();
+
+        return {
+            stop() {
+                if (stopPromise) return stopPromise;
+                stopPromise = new Promise((resolve) => {
+                    let done = false;
+                    const finish = () => {
+                        if (done) return;
+                        done = true;
+                        stream.getTracks().forEach((track) => track.stop());
+                        if (!chunks.length) {
+                            resolve(null);
+                            return;
+                        }
+                        resolve(new Blob(chunks, { type: recorder.mimeType || chunks[0].type || "audio/webm" }));
+                    };
+                    recorder.addEventListener("stop", finish, { once: true });
+                    try {
+                        if (recorder.state === "inactive") {
+                            finish();
+                        } else {
+                            recorder.stop();
+                        }
+                    } catch (_) {
+                        finish();
+                    }
+                });
+                return stopPromise;
+            }
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function appendReviewVoiceRecordingPlayback(resultEl, recordingBlob) {
+    if (!resultEl || !recordingBlob || recordingBlob.size <= 0) return;
+    if (reviewVoicePlaybackUrl) URL.revokeObjectURL(reviewVoicePlaybackUrl);
+    reviewVoicePlaybackUrl = URL.createObjectURL(recordingBlob);
+
+    const playbackEl = document.createElement("div");
+    playbackEl.className = "review-voice-playback";
+
+    const listenBtn = document.createElement("button");
+    listenBtn.type = "button";
+    listenBtn.className = "secondary review-voice-playback-button";
+    listenBtn.textContent = "Listen to your recording";
+
+    const audioEl = document.createElement("audio");
+    audioEl.src = reviewVoicePlaybackUrl;
+    audioEl.preload = "metadata";
+
+    listenBtn.addEventListener("click", async () => {
+        audioEl.currentTime = 0;
+        try {
+            await audioEl.play();
+        } catch (_) {
+            // Some browsers block playback until another user gesture; the click above usually satisfies it.
+        }
+    });
+
+    playbackEl.appendChild(listenBtn);
+    playbackEl.appendChild(audioEl);
+    resultEl.appendChild(playbackEl);
+}
+
+async function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd, options = {}) {
     if (!expectedContent || !resultEl || !buttonEl) return;
+
+    const playbackRequestId = ++reviewVoicePlaybackRequestId;
+    clearReviewVoiceRecordingPlayback();
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -2796,15 +3394,19 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     const prepMs = estimateVoiceCheckPrepMs(expectedContent);
     const listenBudgetMs = estimateVoiceCheckListenBudgetMs(expectedContent);
     const prepSeconds = Math.max(1, Math.ceil(prepMs / 1000));
-    const initialListeningHint = isSafari
-        ? `Preparing… Speak in ${prepSeconds}…`
-        : "Listening… Speak the sentence.";
+    const partLabel = options.partLabel ? String(options.partLabel) : "";
+    const targetName = partLabel ? "this part" : "the sentence";
+    const baseListeningHint = isSafari
+        ? `Preparing… Speak ${targetName} in ${prepSeconds}…`
+        : `Listening… Speak ${targetName}.`;
+    const initialListeningHint = partLabel ? `${partLabel}: ${baseListeningHint}` : baseListeningHint;
     resultEl.innerHTML = `<div class="review-voice-listening-row">
-<span class="review-voice-status">${escapeHtml(initialListeningHint)}</span>
+<span class="review-voice-status">Preparing microphone…</span>
 <button type="button" class="secondary review-voice-done" title="Stop listening and check what was heard">Done speaking</button>
 </div>`;
     const listeningStatusEl = resultEl.querySelector(".review-voice-status");
     const doneSpeakingBtn = resultEl.querySelector(".review-voice-done");
+    doneSpeakingBtn.disabled = true;
     buttonEl.disabled = true;
 
     const expected = normalizeForComparison(expectedContent);
@@ -2820,6 +3422,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
     let sessionFinalized = false;
     let warmupTimeouts = [];
     let listenCapTimer = null;
+    let voiceRecording = null;
 
     const setListeningHint = (text) => {
         if (listeningStatusEl) listeningStatusEl.textContent = text;
@@ -2846,27 +3449,40 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
 
     const finish = (match) => {
         buttonEl.disabled = false;
+        recordVoiceCheckStats(options.stats, match);
         if (typeof onCheckEnd === "function") onCheckEnd(!!match);
     };
 
-    const applyResultUi = (match, transcript) => {
-        resultEl.className = "review-voice-result " + (match ? "review-voice-match" : "review-voice-mismatch");
-        if (match) {
-            resultEl.innerHTML = "✓ Match! You said it correctly.";
-        } else {
-            resultEl.innerHTML = `✗ You said: <strong>${escapeHtml(transcript.trim() || "(no speech heard)")}</strong><br>Expected: ${escapeHtml(expectedContent)}`;
+    const appendRecordingIfCurrent = async () => {
+        const recording = voiceRecording;
+        voiceRecording = null;
+        if (!recording) return;
+        const blob = await recording.stop();
+        if (playbackRequestId === reviewVoicePlaybackRequestId) {
+            appendReviewVoiceRecordingPlayback(resultEl, blob);
         }
+    };
+
+    const applyResultUi = async (match, transcript) => {
+        resultEl.className = "review-voice-result " + (match ? "review-voice-match" : "review-voice-mismatch");
+        const partHtml = partLabel ? `<div class="review-voice-part-label">${escapeHtml(partLabel)}</div>` : "";
+        if (match) {
+            resultEl.innerHTML = `${partHtml}✓ Match! You said it correctly.`;
+        } else {
+            resultEl.innerHTML = `${partHtml}✗ You said: <strong>${escapeHtml(transcript.trim() || "(no speech heard)")}</strong><br>Expected: ${escapeHtml(expectedContent)}`;
+        }
+        await appendRecordingIfCurrent();
         finish(match);
     };
 
-    const finalizeListeningOutcome = () => {
+    const finalizeListeningOutcome = async () => {
         if (sessionFinalized) return;
         if (!resultEl.classList.contains("review-voice-listening")) return;
         sessionFinalized = true;
         resultEl.classList.remove("review-voice-listening");
         stopRecognition();
         const { match, transcript } = tryMatchFromAggregatedAndLastFinal(lastFinalSpeechResult);
-        applyResultUi(match, transcript);
+        await applyResultUi(match, transcript);
     };
 
     doneSpeakingBtn.addEventListener("click", () => finalizeListeningOutcome());
@@ -2896,7 +3512,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
         return { match, transcript: transcript || aggregatedFinalTranscript };
     };
 
-    recognition.onresult = (event) => {
+    recognition.onresult = async (event) => {
         const results = event.results;
         for (let i = event.resultIndex; i < results.length; i++) {
             const r = results[i];
@@ -2919,30 +3535,43 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
         sessionFinalized = true;
         resultEl.classList.remove("review-voice-listening");
         stopRecognition();
-        applyResultUi(true, transcript);
+        await applyResultUi(true, transcript);
     };
 
-    recognition.onerror = (event) => {
+    recognition.onerror = async (event) => {
         sessionFinalized = true;
         stopRecognition();
         resultEl.className = "review-voice-result review-voice-mismatch";
         const msg = event.error === "no-speech" ? "No speech heard. Try again." : (event.error === "not-allowed" ? "Microphone access denied." : `Error: ${event.error}`);
         resultEl.textContent = msg;
+        await appendRecordingIfCurrent();
         finish(false);
     };
 
-    recognition.onend = () => {
+    recognition.onend = async () => {
         if (resultEl.classList.contains("review-voice-listening")) {
             sessionFinalized = true;
             clearVoiceCheckTimers();
             resultEl.className = "review-voice-result review-voice-mismatch";
             resultEl.textContent = "Recognition ended. Click 🎤 to try again.";
+            await appendRecordingIfCurrent();
             finish(false);
         }
     };
 
     try {
+        const recording = await startReviewVoiceRecording();
+        if (playbackRequestId !== reviewVoicePlaybackRequestId || sessionFinalized) {
+            if (recording) await recording.stop();
+            resultEl.className = "review-voice-result";
+            resultEl.innerHTML = "";
+            buttonEl.disabled = false;
+            return;
+        }
+        voiceRecording = recording;
+        setListeningHint(initialListeningHint);
         recognition.start();
+        doneSpeakingBtn.disabled = false;
         const capDelayMs = (isSafari ? prepMs : 0) + listenBudgetMs;
         listenCapTimer = setTimeout(() => {
             listenCapTimer = null;
@@ -2967,6 +3596,7 @@ function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd) {
         clearVoiceCheckTimers();
         resultEl.className = "review-voice-result review-voice-mismatch";
         resultEl.textContent = "Could not start voice recognition: " + (e.message || "unknown error");
+        await appendRecordingIfCurrent();
         finish(false);
     }
 }
@@ -2991,6 +3621,7 @@ async function completeOpenReviewSession() {
             completeBtn.textContent = "Marking…";
         }
         await api.completeReviewSession(session.id);
+        state.statsOverview = null;
         if (sessionPage) {
             sessionPage.classList.add("review-session-completing");
             let navigated = false;
@@ -3046,8 +3677,21 @@ async function updateReviewItemStageDisplay(session, idx) {
     contentEl.innerHTML = await getReviewSentenceDisplay(item.content, stage);
     buttonEl.classList.remove("stage-1", "stage-2", "stage-3");
     buttonEl.classList.add("stage-" + stage);
+    updateReviewSpeakCheckButtonTitle(session, idx, buttonEl);
+}
+
+function updateReviewSpeakCheckButtonTitle(session, idx, buttonEl = null) {
+    const stage = state.reviewSpeakCheckStage[idx] ?? 1;
+    const item = session?.items?.[idx];
+    const targetButton = buttonEl || document.querySelector(`[data-review-speak-check-idx="${idx}"]`);
+    if (!targetButton || !item?.content) return;
     const titles = { 1: "Speak and check (stage 1: full sentence)", 2: "Speak and check (stage 2: verbs hidden)", 3: "Speak and check (stage 3: from memory)" };
-    buttonEl.title = titles[stage] || "Speak and check";
+    const parts = getReviewVoiceCheckParts(item.content);
+    const partIndex = getReviewVoiceCheckPartIndex(parts, state.reviewSpeakCheckPart[idx]);
+    const partText = getReviewVoiceCheckPartLabel(parts, partIndex);
+    targetButton.title = partText
+        ? `${titles[stage] || "Speak and check"} - ${partText.toLowerCase()}`
+        : (titles[stage] || "Speak and check");
 }
 
 function advanceReviewStage(session, idx) {
@@ -3057,23 +3701,43 @@ function advanceReviewStage(session, idx) {
         const li = document.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
         if (li) li.classList.add("review-sentence-item-completed");
     }
+    state.reviewSpeakCheckPart[idx] = 0;
     state.reviewSpeakCheckStage[idx] = current === 3 ? 1 : current + 1;
     updateReviewItemStageDisplay(session, idx);
 }
 
+function appendReviewVoiceNextPartHint(resultEl, text) {
+    if (!resultEl || !text) return;
+    const hint = document.createElement("div");
+    hint.className = "review-voice-next-part";
+    hint.textContent = text;
+    resultEl.appendChild(hint);
+}
+
+function completeReviewVoiceCheckPart(session, idx, parts, partIndex, resultEl) {
+    if (parts.length > 1 && partIndex < parts.length - 1) {
+        state.reviewSpeakCheckPart[idx] = partIndex + 1;
+        updateReviewSpeakCheckButtonTitle(session, idx);
+        appendReviewVoiceNextPartHint(resultEl, `Click the microphone for part ${partIndex + 2} of ${parts.length}.`);
+        return;
+    }
+    state.reviewSpeakCheckPart[idx] = 0;
+    advanceReviewStage(session, idx);
+}
+
 /**
- * Appends a "Skip this stage" button to the result element when speech was not recognized.
+ * Appends a skip button to the result element when speech was not recognized.
  * @param {HTMLElement} resultEl - The voice result container
- * @param {() => void} onSkip - Called when user clicks skip; advances stage
+ * @param {() => void} onSkip - Called when user clicks skip
  */
-function showSkipStageButton(resultEl, onSkip) {
+function showSkipStageButton(resultEl, onSkip, label = "Skip this stage") {
     if (!resultEl) return;
     const existing = resultEl.querySelector(".review-skip-stage");
     if (existing) return;
     const skipBtn = document.createElement("button");
     skipBtn.type = "button";
     skipBtn.className = "review-skip-stage";
-    skipBtn.textContent = "Skip this stage";
+    skipBtn.textContent = label;
     skipBtn.addEventListener("click", () => {
         skipBtn.remove();
         onSkip();
@@ -3086,14 +3750,37 @@ function startReviewVoiceCheck(session, idx) {
     if (!item || !item.content) return;
     const resultEl = document.querySelector(`.review-voice-result[data-review-voice-idx="${idx}"]`);
     const buttonEl = document.querySelector(`[data-review-speak-check-idx="${idx}"]`);
+    const sentenceId = item.sentenceId;
+    const parts = getReviewVoiceCheckParts(item.content);
+    const partIndex = getReviewVoiceCheckPartIndex(parts, state.reviewSpeakCheckPart[idx]);
+    const expectedPart = parts[partIndex] || item.content;
+    const partLabel = getReviewVoiceCheckPartLabel(parts, partIndex);
+    const stage = state.reviewSpeakCheckStage[idx] ?? 1;
+    const attemptNumber = getNextVoiceAttemptNumber(sentenceId);
     const onCheckEnd = (match) => {
         if (match) {
-            advanceReviewStage(session, idx);
+            resetVoiceAttemptNumber(sentenceId);
+            completeReviewVoiceCheckPart(session, idx, parts, partIndex, resultEl);
         } else {
-            showSkipStageButton(resultEl, () => advanceReviewStage(session, idx));
+            const skipLabel = parts.length > 1 ? "Skip this part" : "Skip this stage";
+            showSkipStageButton(resultEl, () => {
+                resetVoiceAttemptNumber(sentenceId);
+                completeReviewVoiceCheckPart(session, idx, parts, partIndex, resultEl);
+            }, skipLabel);
         }
     };
-    runVoiceCheck(item.content, resultEl, buttonEl, onCheckEnd);
+    runVoiceCheck(expectedPart, resultEl, buttonEl, onCheckEnd, {
+        partLabel,
+        stats: {
+            sentenceId,
+            reviewSessionId: session?.id || null,
+            attemptNumber,
+            stage,
+            partIndex,
+            partCount: parts.length,
+            source: "REVIEW"
+        }
+    });
 }
 
 let testReviewPopupEl = null;
@@ -3110,8 +3797,36 @@ async function updateTestReviewStageDisplay(sentence) {
     sentenceEl.innerHTML = await getReviewSentenceDisplay(sentence.content, stage);
     speakCheckBtn.classList.remove("stage-1", "stage-2", "stage-3");
     speakCheckBtn.classList.add("stage-" + stage);
+    updateTestReviewSpeakCheckButtonTitle(sentence, speakCheckBtn);
+}
+
+function updateTestReviewSpeakCheckButtonTitle(sentence, speakCheckBtn = null) {
+    const stage = state.testReviewStage;
+    const targetButton = speakCheckBtn || testReviewPopupEl?.querySelector(".test-review-speak-check");
+    if (!targetButton || !sentence?.content) return;
     const titles = { 1: "Speak and check (stage 1: full sentence)", 2: "Speak and check (stage 2: verbs hidden)", 3: "Speak and check (stage 3: from memory)" };
-    speakCheckBtn.title = titles[stage] || "Speak and check";
+    const parts = getReviewVoiceCheckParts(sentence.content);
+    const partIndex = getReviewVoiceCheckPartIndex(parts, state.testReviewPart);
+    const partText = getReviewVoiceCheckPartLabel(parts, partIndex);
+    targetButton.title = partText
+        ? `${titles[stage] || "Speak and check"} - ${partText.toLowerCase()}`
+        : (titles[stage] || "Speak and check");
+}
+
+function advanceTestReviewStage(sentence) {
+    state.testReviewPart = 0;
+    state.testReviewStage = state.testReviewStage === 3 ? 1 : state.testReviewStage + 1;
+    updateTestReviewStageDisplay(sentence);
+}
+
+function completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl) {
+    if (parts.length > 1 && partIndex < parts.length - 1) {
+        state.testReviewPart = partIndex + 1;
+        updateTestReviewSpeakCheckButtonTitle(sentence);
+        appendReviewVoiceNextPartHint(resultEl, `Click the microphone for part ${partIndex + 2} of ${parts.length}.`);
+        return;
+    }
+    advanceTestReviewStage(sentence);
 }
 
 function openTestReviewPopup(sentenceId) {
@@ -3119,6 +3834,7 @@ function openTestReviewPopup(sentenceId) {
     if (!sentence || !sentence.content) return;
 
     state.testReviewStage = 1;
+    state.testReviewPart = 0;
 
     if (!testReviewPopupEl) {
         testReviewPopupEl = document.createElement("div");
@@ -3152,6 +3868,7 @@ function openTestReviewPopup(sentenceId) {
     const speakCheckBtn = testReviewPopupEl.querySelector(".test-review-speak-check");
 
     sentenceEl.innerHTML = renderSentenceWithWordLinks(sentence.content);
+    updateTestReviewSpeakCheckButtonTitle(sentence, speakCheckBtn);
 
     listenBtn.addEventListener("click", async () => {
         showTtsProgress();
@@ -3162,18 +3879,39 @@ function openTestReviewPopup(sentenceId) {
         }
     });
 
-    const onCheckEnd = (match) => {
+    const onCheckEnd = (match, parts, partIndex) => {
         if (match) {
-            state.testReviewStage = state.testReviewStage === 3 ? 1 : state.testReviewStage + 1;
-            updateTestReviewStageDisplay(sentence);
+            completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl);
         } else {
+            const skipLabel = parts.length > 1 ? "Skip this part" : "Skip this stage";
             showSkipStageButton(resultEl, () => {
-                state.testReviewStage = state.testReviewStage === 3 ? 1 : state.testReviewStage + 1;
-                updateTestReviewStageDisplay(sentence);
-            });
+                resetVoiceAttemptNumber(sentence.id);
+                completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl);
+            }, skipLabel);
         }
     };
-    speakCheckBtn.addEventListener("click", () => runVoiceCheck(sentence.content, resultEl, speakCheckBtn, onCheckEnd));
+    speakCheckBtn.addEventListener("click", () => {
+        const parts = getReviewVoiceCheckParts(sentence.content);
+        const partIndex = getReviewVoiceCheckPartIndex(parts, state.testReviewPart);
+        const expectedPart = parts[partIndex] || sentence.content;
+        const partLabel = getReviewVoiceCheckPartLabel(parts, partIndex);
+        const attemptNumber = getNextVoiceAttemptNumber(sentence.id);
+        runVoiceCheck(expectedPart, resultEl, speakCheckBtn, (match) => {
+            if (match) resetVoiceAttemptNumber(sentence.id);
+            onCheckEnd(match, parts, partIndex);
+        }, {
+            partLabel,
+            stats: {
+                sentenceId: sentence.id,
+                reviewSessionId: null,
+                attemptNumber,
+                stage: state.testReviewStage,
+                partIndex,
+                partCount: parts.length,
+                source: "TEST"
+            }
+        });
+    });
 
     testReviewPopupEl.querySelector(".test-review-close").addEventListener("click", closeTestReviewPopup);
 
@@ -3265,6 +4003,7 @@ async function renderPendingReviews() {
                 const card = button.closest(".pending-review-item");
                 try {
                     await api.completeReviewSession(id);
+                    state.statsOverview = null;
                 } catch (e) {
                     notify(e.message || "Failed to mark as reviewed.");
                     return;
@@ -3394,6 +4133,11 @@ function bindDashboardActions() {
         });
     }
 
+    const retryStatsBtn = document.getElementById("retryStatsBtn");
+    if (retryStatsBtn) {
+        retryStatsBtn.addEventListener("click", () => ensureStatsOverviewLoaded(true));
+    }
+
     bindListItemActions();
 
     const addSentenceBtn = document.getElementById("addSentenceBtn");
@@ -3466,6 +4210,14 @@ function bindDashboardActions() {
 
     document.querySelectorAll("[data-sentence-test-review]").forEach((button) => {
         button.addEventListener("click", () => openTestReviewPopup(Number(button.getAttribute("data-sentence-test-review"))));
+    });
+
+    document.querySelectorAll("[data-sentence-naturalness]").forEach((button) => {
+        button.addEventListener("click", () => sentenceNaturalness(Number(button.getAttribute("data-sentence-naturalness"))));
+    });
+
+    document.querySelectorAll("[data-sentence-stats]").forEach((button) => {
+        button.addEventListener("click", () => openSentenceStatsPopup(Number(button.getAttribute("data-sentence-stats"))));
     });
 
     document.querySelectorAll("[data-sentence-select]").forEach((el) => {

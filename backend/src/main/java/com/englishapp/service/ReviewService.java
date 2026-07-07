@@ -270,6 +270,7 @@ public class ReviewService {
         Map<String, Object> payload = new HashMap<>();
         payload.put("sentenceId", sentence.getId());
         payload.put("listId", sentence.getSentenceList().getId());
+        payload.put("listName", sentence.getSentenceList().getName());
         payload.put("content", sentence.getContent());
         payload.put("dueAt", item.getDueAt());
         payload.put("meaningGroupId", meaningGroup != null ? meaningGroup.getId() : null);

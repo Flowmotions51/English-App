@@ -86,6 +86,11 @@ export const api = {
         body: JSON.stringify({ text, language })
     }),
     grammarConfigured: () => request("/grammar/configured"),
+    checkNaturalness: (text, language = "en", listTitle = "") => request("/ai/naturalness/check", {
+        method: "POST",
+        body: JSON.stringify({ text, language, listTitle })
+    }),
+    naturalnessConfigured: () => request("/ai/naturalness/configured"),
 
     getMeaningGroups: () => request("/meaning-groups"),
     getMeaningGroup: (groupId) => request(`/meaning-groups/${groupId}`),
@@ -97,5 +102,12 @@ export const api = {
     assignSentenceToMeaningGroup: (sentenceId, payload) =>
         request(`/sentences/${sentenceId}/meaning-group`, { method: "PUT", body: JSON.stringify(payload) }),
     unassignSentenceFromMeaningGroup: (sentenceId) =>
-        request(`/sentences/${sentenceId}/meaning-group`, { method: "DELETE" })
+        request(`/sentences/${sentenceId}/meaning-group`, { method: "DELETE" }),
+
+    getStatsOverview: () => request("/stats"),
+    getSentenceStats: (sentenceId) => request(`/stats/sentences/${sentenceId}`),
+    recordPronunciationAttempt: (payload) => request("/stats/pronunciation-attempts", {
+        method: "POST",
+        body: JSON.stringify(payload)
+    })
 };
