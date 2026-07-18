@@ -74,6 +74,7 @@ export const api = {
     refreshReviewSessions: () => request("/reviews/refresh-sessions", { method: "POST" }),
     openReviewSession: (id) => request(`/reviews/sessions/${id}/open`, { method: "POST" }),
     completeReviewSession: (id) => request(`/reviews/sessions/${id}/complete`, { method: "POST" }),
+    completeSentenceReview: (sentenceId) => request(`/reviews/sentences/${sentenceId}/complete`, { method: "POST" }),
 
     getSettings: () => request("/settings"),
     updateSettings: (payload) => request("/settings", { method: "PUT", body: JSON.stringify(payload) }),

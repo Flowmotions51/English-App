@@ -12,6 +12,7 @@ Full-stack sentence memorization app with:
 
 - `backend` - Spring Boot API and Flyway migrations
 - `frontend` - static HTML/CSS/JS app (no framework)
+- `ios/EnglishSRS` - native iOS `WKWebView` wrapper for the frontend
 - `docker-compose.yml` - local PostgreSQL service
 
 ## Features Implemented
@@ -54,6 +55,15 @@ gradle bootRun
 
 Backend API runs on `http://localhost:8080`.
 
+Optional AI naturalness checks use Anthropic Claude from the backend. Set:
+
+```bash
+export ANTHROPIC_API_KEY=your_api_key
+export ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+```
+
+A Claude subscription does not automatically configure API access; the backend needs an Anthropic API key. For an offline/local option, run a small instruct model with Ollama, such as `llama3.1:8b-instruct` or `qwen2.5:7b-instruct`, and adapt `NaturalnessCheckService` to call the local Ollama HTTP API.
+
 ### 3) Start frontend
 
 Serve `frontend` directory as static files, for example:
@@ -64,6 +74,17 @@ python3 -m http.server 5173
 ```
 
 Then open `http://localhost:5173`.
+
+### 4) Build iOS wrapper
+
+The repository includes a compile-ready Xcode project at `ios/EnglishSRS/EnglishSRS.xcodeproj`.
+It must be built on macOS with Xcode:
+
+```bash
+xcodebuild -project ios/EnglishSRS/EnglishSRS.xcodeproj -scheme EnglishSRS -destination 'platform=iOS Simulator,name=iPhone 15' build
+```
+
+See `ios/EnglishSRS/README.md` for bundled-vs-hosted frontend configuration.
 
 ## Testing
 

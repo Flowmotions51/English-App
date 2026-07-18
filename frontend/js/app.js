@@ -138,6 +138,28 @@ function isWeeklyCatchUpSession(session) {
     return session?.kind === "WEEKLY_CATCH_UP";
 }
 
+function isInitialReviewSession(session) {
+    return session?.kind === "INITIAL";
+}
+
+function reviewSessionTitle(session) {
+    if (isInitialReviewSession(session)) return "Initial review";
+    if (isWeeklyCatchUpSession(session)) return "Weekly catch-up review";
+    return "Review session";
+}
+
+function reviewSessionDescription(session) {
+    if (isInitialReviewSession(session)) return "New sentences that have not been reviewed yet.";
+    if (isWeeklyCatchUpSession(session)) return "Weekly catch-up reminder session.";
+    return "Scheduled review session.";
+}
+
+function reviewSessionOpenLabel(session) {
+    if (isInitialReviewSession(session)) return "Open initial";
+    if (isWeeklyCatchUpSession(session)) return "Open catch-up";
+    return "Open";
+}
+
 function getWeeklyCatchUpPendingSession() {
     return (state.pendingSessions || []).find((session) => isWeeklyCatchUpSession(session)) || null;
 }
@@ -290,7 +312,7 @@ const HIDDEN_PLACEHOLDER = "{{HIDDEN}}";
 /** One blank per word for "all hidden" stage (returns text with placeholders). */
 function getSentenceWithAllHidden(text) {
     if (!text || typeof text !== "string") return "";
-    return text.replace(/\w+(?:'\w+)*/g, HIDDEN_PLACEHOLDER);
+    return text.replace(/\w+(?:(?:'|-)\w+)*/g, HIDDEN_PLACEHOLDER);
 }
 
 let nlpModule = null;
@@ -303,7 +325,6 @@ async function getNlp() {
 async function getSentenceWithVerbsHidden(text) {
     if (!text || typeof text !== "string") return "";
     try {
-        text = text.replace(/-/g, ""); /** Fixed HIDDEN froblem **/
         const nlp = await getNlp();
         const doc = nlp(text);
         const verbs = doc.verbs();
@@ -315,17 +336,25 @@ async function getSentenceWithVerbsHidden(text) {
 }
 
 const HIDDEN_WORD_HTML = '<span class="review-hidden-word"></span>';
+const HIDDEN_MARKER_REGEX = /\{\{HIDDEN\}\}|\{HIDDEN\}/g;
+const HIDDEN_MARKER_CLUSTER_REGEX = /(?:\{\{HIDDEN\}\}|\{HIDDEN\})(?:(?:\s*[-.,!?;:]+\s*)(?:\{\{HIDDEN\}\}|\{HIDDEN\}))*(?:\s*[-.,!?;:]+)?/g;
+
+function renderHiddenReviewText(masked) {
+    return escapeHtml(masked).replace(HIDDEN_MARKER_CLUSTER_REGEX, (match) => {
+        const hiddenCount = (match.match(HIDDEN_MARKER_REGEX) || []).length;
+        return Array.from({ length: Math.max(1, hiddenCount) }, () => HIDDEN_WORD_HTML).join(" ");
+    });
+}
 
 /** Get display content for review sentence by stage (1=full, 2=verbs hidden, 3=all hidden). */
 async function getReviewSentenceDisplay(content, stage) {
     if (stage === 1) return renderSentenceWithWordLinks(content);
-    const placeholderRegex = /\{\{HIDDEN\}\}/g;
     if (stage === 2) {
         const masked = await getSentenceWithVerbsHidden(content);
-        return escapeHtml(masked).replace(placeholderRegex, HIDDEN_WORD_HTML);
+        return renderHiddenReviewText(masked);
     }
     const masked = getSentenceWithAllHidden(content);
-    return escapeHtml(masked).replace(placeholderRegex, HIDDEN_WORD_HTML);
+    return renderHiddenReviewText(masked);
 }
 
 const DICTIONARY_API = "https://api.dictionaryapi.dev/api/v2/entries/en";
@@ -2652,7 +2681,6 @@ function renderReviewSentenceItemHtml(item, idx, groupId) {
         <div class="review-sentence-main">
           <div class="review-sentence-copy">
             <div class="review-sentence-content">${renderSentenceWithWordLinks(item.content)}</div>
-            ${listTitle ? `<div class="hint review-sentence-list-name"><button type="button" class="review-context-reveal" data-review-context-idx="${idx}">Look up the context</button></div>` : ""}
           </div>
           <div class="review-sentence-buttons">
             <button type="button" class="btn-icon secondary review-speak" data-review-speak-idx="${idx}" title="Listen">🔊</button>
@@ -2660,6 +2688,12 @@ function renderReviewSentenceItemHtml(item, idx, groupId) {
             <button type="button" class="btn-icon secondary review-speak-check stage-1" data-review-speak-check-idx="${idx}" title="Speak and check (stage 1: full sentence)">🎤</button>
             <button type="button" class="secondary review-more-toggle" data-review-more-idx="${idx}" aria-expanded="false" aria-controls="review-extra-actions-${idx}" title="Show more actions">More</button>
             <div class="review-extra-actions" id="review-extra-actions-${idx}" aria-hidden="true">
+              ${listTitle ? html`
+                <span class="review-context-control">
+                  <button type="button" class="secondary review-context-action" data-review-context-idx="${idx}" aria-expanded="false" aria-controls="review-context-popover-${idx}" tabindex="-1">Look up the context</button>
+                  <span class="review-context-popover" id="review-context-popover-${idx}" role="status" aria-hidden="true"></span>
+                </span>
+              ` : ""}
               <button type="button" class="btn-icon secondary review-edit" data-review-edit-idx="${idx}" title="Edit" tabindex="-1">✏</button>
               <button type="button" class="btn-icon secondary review-playphrase" data-review-playphrase-idx="${idx}" title="Play phrase (playphrase.me)" tabindex="-1">▶️</button>
               <button type="button" class="btn-icon secondary review-youglish" data-review-youglish-idx="${idx}" title="Pronounce (YouGlish)" tabindex="-1">🔤</button>
@@ -2671,11 +2705,33 @@ function renderReviewSentenceItemHtml(item, idx, groupId) {
     `;
 }
 
+function setReviewContextPopoverOpen(button, open, listTitle = "") {
+    const control = button?.closest(".review-context-control");
+    const popoverId = button?.getAttribute("aria-controls");
+    const popover = popoverId ? document.getElementById(popoverId) : null;
+    if (!button || !control || !popover) return;
+
+    if (open && listTitle) {
+        popover.textContent = `in ${listTitle}`;
+    }
+    control.classList.toggle("is-context-open", open);
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.title = open ? "Hide context" : "Look up the context";
+    popover.setAttribute("aria-hidden", open ? "false" : "true");
+}
+
+function closeReviewContextPopovers(scope = document) {
+    scope.querySelectorAll(".review-context-control.is-context-open .review-context-action").forEach((button) => {
+        setReviewContextPopoverOpen(button, false);
+    });
+}
+
 function setReviewExtraActionsOpen(toggleButton, open) {
     const controlsId = toggleButton?.getAttribute("aria-controls");
     const actionsEl = controlsId ? document.getElementById(controlsId) : null;
     if (!toggleButton || !actionsEl) return;
 
+    if (!open) closeReviewContextPopovers(actionsEl);
     toggleButton.setAttribute("aria-expanded", open ? "true" : "false");
     toggleButton.textContent = open ? "Less" : "More";
     toggleButton.title = open ? "Hide more actions" : "Show more actions";
@@ -2735,13 +2791,15 @@ function renderReviewSessionPage() {
     }
     removeFloatingSessionSquares();
     const isWeeklyCatchUp = isWeeklyCatchUpSession(session);
+    const title = reviewSessionTitle(session);
+    const description = reviewSessionDescription(session);
     loadReviewSessionProgress(session);
     appEl.innerHTML = html`
       <section class="container card review-session-page">
-        <h2>${isWeeklyCatchUp ? "Weekly catch-up review" : "Review session"}</h2>
+        <h2>${escapeHtml(title)}</h2>
         <p class="hint">
           Due: ${new Date(session.startAt).toLocaleString()} — ${session.items.length} sentence(s) to review.
-          ${isWeeklyCatchUp ? " Weekly catch-up reminder session." : ""}
+          ${description ? ` ${escapeHtml(description)}` : ""}
         </p>
         <ol class="review-sentences-list">
           ${buildReviewSessionItemsHtml(session.items)}
@@ -2810,10 +2868,10 @@ function renderReviewSessionPage() {
             const idx = parseInt(button.getAttribute("data-review-context-idx"), 10);
             const item = session.items[idx];
             const listTitle = getSentenceListTitle(item);
-            const container = button.closest(".review-sentence-list-name");
-            if (!container || !listTitle) return;
-            container.textContent = `in ${listTitle}`;
-            container.classList.add("is-revealed");
+            if (!listTitle) return;
+            const isOpen = button.getAttribute("aria-expanded") === "true";
+            closeReviewContextPopovers();
+            setReviewContextPopoverOpen(button, !isOpen, listTitle);
         });
     });
 
@@ -3819,14 +3877,57 @@ function advanceTestReviewStage(sentence) {
     updateTestReviewStageDisplay(sentence);
 }
 
+async function refreshPendingReviewsAfterInlineSentenceReview() {
+    state.pendingSessions = await api.getPendingReviews();
+    const reviewsHeading = document.querySelector("[data-pending-reviews-heading]");
+    if (reviewsHeading) reviewsHeading.textContent = `Pending Reviews (${getDueUnreadSessions().length})`;
+    if (document.getElementById("pendingReviews")) {
+        await renderPendingReviews();
+    }
+    mountFloatingSessionSquares();
+}
+
+function appendTestReviewCompletionHint(resultEl, text) {
+    if (!resultEl || !text) return;
+    const existing = resultEl.querySelector(".test-review-completion-hint");
+    if (existing) existing.remove();
+    const hint = document.createElement("div");
+    hint.className = "review-voice-next-part test-review-completion-hint";
+    hint.textContent = text;
+    resultEl.appendChild(hint);
+}
+
+async function recordCompletedListTestReview(sentence, resultEl) {
+    if (!sentence?.id) return;
+    try {
+        const result = await api.completeSentenceReview(sentence.id);
+        if (!result?.recorded) return;
+        const reviewCount = Number(result.reviewCount);
+        if (Number.isFinite(reviewCount)) {
+            sentence.reviewCount = reviewCount;
+            updateSentenceInState({ ...sentence, reviewCount });
+        }
+        state.statsOverview = null;
+        await refreshPendingReviewsAfterInlineSentenceReview();
+        appendTestReviewCompletionHint(resultEl, result.reason === "INITIAL"
+            ? "Initial review counted."
+            : "Due review counted.");
+    } catch (err) {
+        notify(err.message || "Could not record this review.");
+        throw err;
+    }
+}
+
 function completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl) {
     if (parts.length > 1 && partIndex < parts.length - 1) {
         state.testReviewPart = partIndex + 1;
         updateTestReviewSpeakCheckButtonTitle(sentence);
         appendReviewVoiceNextPartHint(resultEl, `Click the microphone for part ${partIndex + 2} of ${parts.length}.`);
-        return;
+        return false;
     }
+    const completedStage = state.testReviewStage;
     advanceTestReviewStage(sentence);
+    return completedStage === 3;
 }
 
 function openTestReviewPopup(sentenceId) {
@@ -3866,6 +3967,15 @@ function openTestReviewPopup(sentenceId) {
     const resultEl = testReviewPopupEl.querySelector(".test-review-voice-result");
     const listenBtn = testReviewPopupEl.querySelector(".test-review-listen");
     const speakCheckBtn = testReviewPopupEl.querySelector(".test-review-speak-check");
+    let reviewCompletionChecked = false;
+
+    const maybeRecordCompletedReview = (completedFullReview) => {
+        if (!completedFullReview || reviewCompletionChecked) return;
+        reviewCompletionChecked = true;
+        recordCompletedListTestReview(sentence, resultEl).catch(() => {
+            reviewCompletionChecked = false;
+        });
+    };
 
     sentenceEl.innerHTML = renderSentenceWithWordLinks(sentence.content);
     updateTestReviewSpeakCheckButtonTitle(sentence, speakCheckBtn);
@@ -3881,12 +3991,14 @@ function openTestReviewPopup(sentenceId) {
 
     const onCheckEnd = (match, parts, partIndex) => {
         if (match) {
-            completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl);
+            const completedFullReview = completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl);
+            maybeRecordCompletedReview(completedFullReview);
         } else {
             const skipLabel = parts.length > 1 ? "Skip this part" : "Skip this stage";
             showSkipStageButton(resultEl, () => {
                 resetVoiceAttemptNumber(sentence.id);
-                completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl);
+                const completedFullReview = completeTestReviewVoiceCheckPart(sentence, parts, partIndex, resultEl);
+                maybeRecordCompletedReview(completedFullReview);
             }, skipLabel);
         }
     };
@@ -3968,16 +4080,18 @@ async function renderPendingReviews() {
     container.innerHTML = state.pendingSessions.length === 0
         ? "<p class='hint'>No pending review sessions.</p>"
         : state.pendingSessions.map((session, index) => html`
-            <div class="card pending-review-item pending-review-color-${index % 5}">
+            <div class="card pending-review-item pending-review-color-${index % 5} ${isInitialReviewSession(session) ? "pending-review-initial" : ""}">
               <div class="pending-review-info">
+                <div class="pending-review-title">${escapeHtml(reviewSessionTitle(session))}</div>
                 <div class="pending-review-preview">${buildSessionPreviewHtml(session.items)}</div>
                 <div class="pending-review-meta">
                   ${new Date(session.startAt).toLocaleString()} (${session.items.length} sentences)
                   ${isWeeklyCatchUpSession(session) ? " • Weekly catch-up" : ""}
+                  ${isInitialReviewSession(session) ? " • New sentences" : ""}
                 </div>
               </div>
               <div class="pending-review-actions">
-                <button data-session-open="${session.id}" class="secondary">${isWeeklyCatchUpSession(session) ? "Open catch-up" : "Open"}</button>
+                <button data-session-open="${session.id}" class="secondary">${escapeHtml(reviewSessionOpenLabel(session))}</button>
                 <button data-session-complete="${session.id}">Mark reviewed</button>
               </div>
             </div>
@@ -4163,7 +4277,7 @@ function bindDashboardActions() {
             try {
                 const created = await api.addSentence(state.selectedListId, { content });
                 state.newSentenceId = created?.id ?? null;
-                await refreshAndRender();
+                await refreshAndRender({ refreshReviewSessions: true });
             } catch (err) {
                 clone.remove();
                 state.morphClone = null;

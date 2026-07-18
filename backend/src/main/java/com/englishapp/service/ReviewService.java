@@ -55,12 +55,17 @@ public class ReviewService {
         Instant now = Instant.now();
         ZoneId zoneId = parseZone(user.getTimezone());
 
+        createInitialReviewSessions(user, sentences, reviewCounts, now);
+
         for (Sentence sentence : sentences) {
             ScheduleTemplate schedule = scheduleBySentence.get(sentence.getId());
             if (schedule == null || schedule.getSteps().isEmpty()) {
                 continue;
             }
             long reviewed = reviewCounts.getOrDefault(sentence.getId(), 0L);
+            if (reviewed == 0L) {
+                continue;
+            }
             Instant dueAt = SchedulePlanner.occurrenceAt(
                     schedule,
                     sentence.getCreatedAt(),
@@ -117,6 +122,49 @@ public class ReviewService {
         }
 
         createWeeklyCatchUpSession(user, sentences, reviewCounts, lastReviewedAt, now, zoneId);
+    }
+
+    private void createInitialReviewSessions(
+            UserAccount user,
+            List<Sentence> sentences,
+            Map<Long, Long> reviewCounts,
+            Instant now
+    ) {
+        List<Sentence> unreviewed = sentences.stream()
+                .filter(sentence -> reviewCounts.getOrDefault(sentence.getId(), 0L) == 0L)
+                .sorted(Comparator
+                        .comparing(Sentence::getCreatedAt)
+                        .thenComparing(Sentence::getId))
+                .toList();
+
+        for (int offset = 0; offset < unreviewed.size(); offset += MAX_SENTENCES_PER_REVIEW_SESSION) {
+            int end = Math.min(offset + MAX_SENTENCES_PER_REVIEW_SESSION, unreviewed.size());
+            List<DueSentence> chunk = clusterByMeaningGroup(unreviewed.subList(offset, end).stream()
+                    .map(sentence -> new DueSentence(sentence, sentence.getCreatedAt(), false))
+                    .toList());
+
+            ReviewSession session = new ReviewSession();
+            session.setUser(user);
+            session.setStartAt(now);
+            session.setEndAt(now.plus(Duration.ofMinutes(user.getMergeWindowMinutes())));
+            session.setStatus(ReviewSessionStatus.PENDING);
+            session.setKind(ReviewSessionKind.INITIAL);
+            session = reviewSessionRepository.save(session);
+
+            for (DueSentence dueSentence : chunk) {
+                ReviewSessionItem item = new ReviewSessionItem();
+                item.setReviewSession(session);
+                item.setSentence(dueSentence.sentence());
+                item.setDueAt(dueSentence.dueAt());
+                reviewSessionItemRepository.save(item);
+            }
+
+            ReviewNotification notification = new ReviewNotification();
+            notification.setUser(user);
+            notification.setReviewSession(session);
+            notification.setRead(false);
+            reviewNotificationRepository.save(notification);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -186,6 +234,59 @@ public class ReviewService {
         });
     }
 
+    @Transactional
+    public Map<String, Object> completeSentenceFromListReview(UserAccount user, Long sentenceId) {
+        Sentence sentence = sentenceRepository.findByIdAndUser(sentenceId, user.getId())
+                .orElseThrow(() -> new NotFoundException("Sentence not found"));
+        Instant now = Instant.now();
+        long reviewCount = sentenceReviewRepository.countBySentence_IdAndUser_Id(sentenceId, user.getId());
+        Instant dueAt = null;
+        String reason = "NOT_DUE";
+        boolean shouldRecord = reviewCount == 0L;
+        if (shouldRecord) {
+            reason = "INITIAL";
+        } else {
+            Optional<ScheduleTemplate> schedule = scheduleTemplateRepository.findBySentenceId(sentenceId);
+            if (schedule.isEmpty()) {
+                reason = "NO_SCHEDULE";
+            } else {
+                dueAt = SchedulePlanner.occurrenceAt(
+                        schedule.get(),
+                        sentence.getCreatedAt(),
+                        sentenceReviewRepository.lastReviewedAtForSentence(sentenceId, user.getId()),
+                        reviewCount
+                );
+                shouldRecord = dueAt != null && !dueAt.isAfter(now);
+                if (shouldRecord) {
+                    reason = "DUE";
+                }
+            }
+        }
+
+        if (!shouldRecord) {
+            return Map.<String, Object>of(
+                    "recorded", false,
+                    "reason", reason,
+                    "reviewCount", reviewCount
+            );
+        }
+
+        SentenceReview sentenceReview = new SentenceReview();
+        sentenceReview.setUser(user);
+        sentenceReview.setSentence(sentence);
+        sentenceReview.setReviewedAt(now);
+        sentenceReviewRepository.saveAndFlush(sentenceReview);
+        refreshPendingSessions(user);
+
+        return Map.<String, Object>of(
+                "recorded", true,
+                "reason", reason,
+                "reviewCount", reviewCount + 1,
+                "reviewedAt", now,
+                "dueAt", dueAt != null ? dueAt : sentence.getCreatedAt()
+        );
+    }
+
     private ZoneId parseZone(String timezone) {
         try {
             return ZoneId.of(timezone);
@@ -211,6 +312,7 @@ public class ReviewService {
         }
 
         List<Sentence> leastReviewed = sentences.stream()
+                .filter(sentence -> reviewCounts.getOrDefault(sentence.getId(), 0L) > 0L)
                 .sorted(Comparator
                         .comparingLong((Sentence sentence) -> reviewCounts.getOrDefault(sentence.getId(), 0L))
                         .thenComparing(

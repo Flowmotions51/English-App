@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Leave FrontendURL empty to bundle and load ../../frontend from this repository. -->
+    <key>FrontendURL</key>
+    <string></string>
+
+    <!-- Used by bundled mode. Must point to the Spring backend /api root with current stats and AI endpoints. -->
+    <key>APIBaseURL</key>
+    <string>https://repeat-every-day.com/api</string>
+</dict>
+</plist>

@@ -43,4 +43,12 @@ public class ReviewController {
         reviewService.completeSession(currentUserService.getCurrentUser(), sessionId);
         return ResponseEntity.ok(Map.of("status", "ok"));
     }
+
+    @PostMapping("/sentences/{sentenceId}/complete")
+    public ResponseEntity<Map<String, Object>> completeSentenceFromListReview(@PathVariable Long sentenceId) {
+        return ResponseEntity.ok(reviewService.completeSentenceFromListReview(
+                currentUserService.getCurrentUser(),
+                sentenceId
+        ));
+    }
 }
