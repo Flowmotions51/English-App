@@ -38,13 +38,7 @@ public class ReviewService {
 
     @Transactional
     public void refreshPendingSessions(UserAccount user) {
-        reviewNotificationRepository.deleteByUserId(user.getId());
-        reviewSessionRepository.deleteByUserIdAndStatus(user.getId(), ReviewSessionStatus.PENDING);
-
         List<Sentence> sentences = sentenceRepository.findAllByUserId(user.getId());
-        if (sentences.isEmpty()) {
-            return;
-        }
 
         Map<Long, ScheduleTemplate> scheduleBySentence = scheduleTemplateRepository.findBySentenceSentenceListUserId(user.getId())
                 .stream()
@@ -55,7 +49,8 @@ public class ReviewService {
         Instant now = Instant.now();
         ZoneId zoneId = parseZone(user.getTimezone());
 
-        createInitialReviewSessions(user, sentences, reviewCounts, now);
+        List<PlannedSession> plannedSessions = new ArrayList<>();
+        plannedSessions.addAll(planInitialReviewSessions(sentences, reviewCounts, now, user.getMergeWindowMinutes()));
 
         for (Sentence sentence : sentences) {
             ScheduleTemplate schedule = scheduleBySentence.get(sentence.getId());
@@ -95,40 +90,91 @@ public class ReviewService {
                 for (int offset = 0; offset < inBucket.size(); offset += MAX_SENTENCES_PER_REVIEW_SESSION) {
                     int end = Math.min(offset + MAX_SENTENCES_PER_REVIEW_SESSION, inBucket.size());
                     List<DueSentence> chunk = clusterByMeaningGroup(inBucket.subList(offset, end));
-
-                    ReviewSession session = new ReviewSession();
-                    session.setUser(user);
-                    session.setStartAt(windowStart);
-                    session.setEndAt(windowStart.plus(Duration.ofMinutes(mergeWindow)));
-                    session.setStatus(ReviewSessionStatus.PENDING);
-                    session.setKind(ReviewSessionKind.REGULAR);
-                    session = reviewSessionRepository.save(session);
-
-                    for (DueSentence dueSentence : chunk) {
-                        ReviewSessionItem item = new ReviewSessionItem();
-                        item.setReviewSession(session);
-                        item.setSentence(dueSentence.sentence());
-                        item.setDueAt(dueSentence.dueAt());
-                        reviewSessionItemRepository.save(item);
-                    }
-
-                    ReviewNotification notification = new ReviewNotification();
-                    notification.setUser(user);
-                    notification.setReviewSession(session);
-                    notification.setRead(false);
-                    reviewNotificationRepository.save(notification);
+                    plannedSessions.add(new PlannedSession(
+                            ReviewSessionKind.REGULAR,
+                            windowStart,
+                            windowStart.plus(Duration.ofMinutes(mergeWindow)),
+                            chunk
+                    ));
                 }
             }
         }
 
-        createWeeklyCatchUpSession(user, sentences, reviewCounts, lastReviewedAt, now, zoneId);
+        planWeeklyCatchUpSession(sentences, reviewCounts, lastReviewedAt, now, zoneId, user.getWeeklyReviewDay())
+                .ifPresent(plannedSessions::add);
+
+        reconcilePendingSessions(user, plannedSessions);
     }
 
-    private void createInitialReviewSessions(
-            UserAccount user,
+    /**
+     * Keeps existing PENDING sessions whose sentence set is unchanged (same kind, same sentences) so
+     * that ids/notification read-state survive repeated refresh calls (login, page load, other-session
+     * completion). Only sessions whose sentence set actually changed are deleted/recreated.
+     */
+    private void reconcilePendingSessions(UserAccount user, List<PlannedSession> plannedSessions) {
+        List<ReviewSession> existingSessions = reviewSessionRepository
+                .findByUserIdAndStatusOrderByStartAtAscIdAsc(user.getId(), ReviewSessionStatus.PENDING);
+        Map<String, ReviewSession> existingByKey = new HashMap<>();
+        for (ReviewSession session : existingSessions) {
+            List<Long> sentenceIds = reviewSessionItemRepository.findByReviewSessionId(session.getId()).stream()
+                    .map(item -> item.getSentence().getId())
+                    .toList();
+            existingByKey.put(sessionKey(session.getKind(), sentenceIds), session);
+        }
+
+        for (PlannedSession planned : plannedSessions) {
+            List<Long> sentenceIds = planned.items().stream().map(d -> d.sentence().getId()).toList();
+            ReviewSession existing = existingByKey.remove(sessionKey(planned.kind(), sentenceIds));
+            if (existing == null) {
+                persistPlannedSession(user, planned);
+            }
+        }
+
+        for (ReviewSession stale : existingByKey.values()) {
+            reviewNotificationRepository.findByReviewSessionId(stale.getId())
+                    .ifPresent(reviewNotificationRepository::delete);
+            reviewSessionRepository.delete(stale);
+        }
+    }
+
+    private String sessionKey(ReviewSessionKind kind, List<Long> sentenceIds) {
+        String sortedIds = sentenceIds.stream()
+                .sorted()
+                .map(String::valueOf)
+                .reduce((a, b) -> a + "," + b)
+                .orElse("");
+        return kind.name() + "|" + sortedIds;
+    }
+
+    private void persistPlannedSession(UserAccount user, PlannedSession planned) {
+        ReviewSession session = new ReviewSession();
+        session.setUser(user);
+        session.setStartAt(planned.startAt());
+        session.setEndAt(planned.endAt());
+        session.setStatus(ReviewSessionStatus.PENDING);
+        session.setKind(planned.kind());
+        session = reviewSessionRepository.save(session);
+
+        for (DueSentence dueSentence : planned.items()) {
+            ReviewSessionItem item = new ReviewSessionItem();
+            item.setReviewSession(session);
+            item.setSentence(dueSentence.sentence());
+            item.setDueAt(dueSentence.dueAt());
+            reviewSessionItemRepository.save(item);
+        }
+
+        ReviewNotification notification = new ReviewNotification();
+        notification.setUser(user);
+        notification.setReviewSession(session);
+        notification.setRead(false);
+        reviewNotificationRepository.save(notification);
+    }
+
+    private List<PlannedSession> planInitialReviewSessions(
             List<Sentence> sentences,
             Map<Long, Long> reviewCounts,
-            Instant now
+            Instant now,
+            int mergeWindowMinutes
     ) {
         List<Sentence> unreviewed = sentences.stream()
                 .filter(sentence -> reviewCounts.getOrDefault(sentence.getId(), 0L) == 0L)
@@ -137,34 +183,20 @@ public class ReviewService {
                         .thenComparing(Sentence::getId))
                 .toList();
 
+        List<PlannedSession> planned = new ArrayList<>();
         for (int offset = 0; offset < unreviewed.size(); offset += MAX_SENTENCES_PER_REVIEW_SESSION) {
             int end = Math.min(offset + MAX_SENTENCES_PER_REVIEW_SESSION, unreviewed.size());
             List<DueSentence> chunk = clusterByMeaningGroup(unreviewed.subList(offset, end).stream()
                     .map(sentence -> new DueSentence(sentence, sentence.getCreatedAt(), false))
                     .toList());
-
-            ReviewSession session = new ReviewSession();
-            session.setUser(user);
-            session.setStartAt(now);
-            session.setEndAt(now.plus(Duration.ofMinutes(user.getMergeWindowMinutes())));
-            session.setStatus(ReviewSessionStatus.PENDING);
-            session.setKind(ReviewSessionKind.INITIAL);
-            session = reviewSessionRepository.save(session);
-
-            for (DueSentence dueSentence : chunk) {
-                ReviewSessionItem item = new ReviewSessionItem();
-                item.setReviewSession(session);
-                item.setSentence(dueSentence.sentence());
-                item.setDueAt(dueSentence.dueAt());
-                reviewSessionItemRepository.save(item);
-            }
-
-            ReviewNotification notification = new ReviewNotification();
-            notification.setUser(user);
-            notification.setReviewSession(session);
-            notification.setRead(false);
-            reviewNotificationRepository.save(notification);
+            planned.add(new PlannedSession(
+                    ReviewSessionKind.INITIAL,
+                    now,
+                    now.plus(Duration.ofMinutes(mergeWindowMinutes)),
+                    chunk
+            ));
         }
+        return planned;
     }
 
     @Transactional(readOnly = true)
@@ -295,20 +327,20 @@ public class ReviewService {
         }
     }
 
-    private void createWeeklyCatchUpSession(
-            UserAccount user,
+    private Optional<PlannedSession> planWeeklyCatchUpSession(
             List<Sentence> sentences,
             Map<Long, Long> reviewCounts,
             Map<Long, Instant> lastReviewedAt,
             Instant now,
-            ZoneId zoneId
+            ZoneId zoneId,
+            int weeklyReviewDay
     ) {
         if (sentences.isEmpty()) {
-            return;
+            return Optional.empty();
         }
-        Instant weekStart = weeklyCatchUpStart(now, user.getWeeklyReviewDay(), zoneId);
+        Instant weekStart = weeklyCatchUpStart(now, weeklyReviewDay, zoneId);
         if (weekStart.isAfter(now)) {
-            return;
+            return Optional.empty();
         }
 
         List<Sentence> leastReviewed = sentences.stream()
@@ -325,30 +357,18 @@ public class ReviewService {
                 .toList();
 
         if (leastReviewed.isEmpty()) {
-            return;
+            return Optional.empty();
         }
 
-        ReviewSession session = new ReviewSession();
-        session.setUser(user);
-        session.setStartAt(weekStart);
-        session.setEndAt(weekStart.plus(Duration.ofDays(7)));
-        session.setStatus(ReviewSessionStatus.PENDING);
-        session.setKind(ReviewSessionKind.WEEKLY_CATCH_UP);
-        session = reviewSessionRepository.save(session);
-
-        for (Sentence sentence : leastReviewed) {
-            ReviewSessionItem item = new ReviewSessionItem();
-            item.setReviewSession(session);
-            item.setSentence(sentence);
-            item.setDueAt(weekStart);
-            reviewSessionItemRepository.save(item);
-        }
-
-        ReviewNotification notification = new ReviewNotification();
-        notification.setUser(user);
-        notification.setReviewSession(session);
-        notification.setRead(false);
-        reviewNotificationRepository.save(notification);
+        List<DueSentence> items = leastReviewed.stream()
+                .map(sentence -> new DueSentence(sentence, weekStart, false))
+                .toList();
+        return Optional.of(new PlannedSession(
+                ReviewSessionKind.WEEKLY_CATCH_UP,
+                weekStart,
+                weekStart.plus(Duration.ofDays(7)),
+                items
+        ));
     }
 
     private Instant weeklyCatchUpStart(Instant now, int weeklyReviewDay, ZoneId zoneId) {
@@ -431,5 +451,8 @@ public class ReviewService {
     }
 
     private record DueSentence(Sentence sentence, Instant dueAt, boolean weeklyCadence) {
+    }
+
+    private record PlannedSession(ReviewSessionKind kind, Instant startAt, Instant endAt, List<DueSentence> items) {
     }
 }

@@ -10,5 +10,4 @@ import java.util.Optional;
 public interface ReviewSessionRepository extends JpaRepository<ReviewSession, Long> {
     List<ReviewSession> findByUserIdAndStatusOrderByStartAtAscIdAsc(Long userId, ReviewSessionStatus status);
     Optional<ReviewSession> findByIdAndUserId(Long id, Long userId);
-    void deleteByUserIdAndStatus(Long userId, ReviewSessionStatus status);
 }

@@ -1885,14 +1885,16 @@ button.show-lists-btn:active,
 }
 
 .review-more-toggle {
-    min-height: 44px;
-    padding: 6px 12px;
+    font-size: 1.1rem;
+    line-height: 1;
+    transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s ease, color 0.2s ease;
+}
+
+.review-more-toggle.is-open {
+    transform: rotate(180deg);
 }
 
 .review-context-action {
-    min-height: 44px;
-    padding: 6px 12px;
-    white-space: nowrap;
     transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), background 0.2s ease, color 0.2s ease;
 }
 
@@ -1970,7 +1972,7 @@ button.show-lists-btn:active,
 }
 
 .review-extra-actions.is-open {
-    max-width: 340px;
+    max-width: 220px;
     opacity: 1;
     overflow: visible;
     pointer-events: auto;

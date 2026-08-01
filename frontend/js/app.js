@@ -307,7 +307,12 @@ function renderSentenceWithWordLinks(content) {
     });
 }
 
-const HIDDEN_PLACEHOLDER = "{{HIDDEN}}";
+// Plain alphanumeric on purpose: compromise's serializer treats braces as
+// bracket punctuation and reshuffles them relative to neighboring sentence
+// punctuation (e.g. "{{HIDDEN}}?" -> "{{HIDDEN?}}", sometimes losing a
+// brace entirely), which left the literal placeholder text on screen
+// whenever a hidden verb sat next to punctuation like . ? ; : ,
+const HIDDEN_PLACEHOLDER = "ZZZHIDDENZZZ";
 
 /** One blank per word for "all hidden" stage (returns text with placeholders). */
 function getSentenceWithAllHidden(text) {
@@ -336,14 +341,10 @@ async function getSentenceWithVerbsHidden(text) {
 }
 
 const HIDDEN_WORD_HTML = '<span class="review-hidden-word"></span>';
-const HIDDEN_MARKER_REGEX = /\{\{HIDDEN\}\}|\{HIDDEN\}/g;
-const HIDDEN_MARKER_CLUSTER_REGEX = /(?:\{\{HIDDEN\}\}|\{HIDDEN\})(?:(?:\s*[-.,!?;:]+\s*)(?:\{\{HIDDEN\}\}|\{HIDDEN\}))*(?:\s*[-.,!?;:]+)?/g;
+const HIDDEN_MARKER_REGEX = new RegExp(HIDDEN_PLACEHOLDER, "g");
 
 function renderHiddenReviewText(masked) {
-    return escapeHtml(masked).replace(HIDDEN_MARKER_CLUSTER_REGEX, (match) => {
-        const hiddenCount = (match.match(HIDDEN_MARKER_REGEX) || []).length;
-        return Array.from({ length: Math.max(1, hiddenCount) }, () => HIDDEN_WORD_HTML).join(" ");
-    });
+    return escapeHtml(masked).replace(HIDDEN_MARKER_REGEX, HIDDEN_WORD_HTML);
 }
 
 /** Get display content for review sentence by stage (1=full, 2=verbs hidden, 3=all hidden). */
@@ -2686,11 +2687,11 @@ function renderReviewSentenceItemHtml(item, idx, groupId) {
             <button type="button" class="btn-icon secondary review-speak" data-review-speak-idx="${idx}" title="Listen">🔊</button>
             <button type="button" class="btn-icon secondary review-naturalness" data-review-naturalness-idx="${idx}" title="AI naturalness check">✨</button>
             <button type="button" class="btn-icon secondary review-speak-check stage-1" data-review-speak-check-idx="${idx}" title="Speak and check (stage 1: full sentence)">🎤</button>
-            <button type="button" class="secondary review-more-toggle" data-review-more-idx="${idx}" aria-expanded="false" aria-controls="review-extra-actions-${idx}" title="Show more actions">More</button>
+            <button type="button" class="btn-icon secondary review-more-toggle" data-review-more-idx="${idx}" aria-expanded="false" aria-controls="review-extra-actions-${idx}" aria-label="Show more actions" title="Show more actions">›</button>
             <div class="review-extra-actions" id="review-extra-actions-${idx}" aria-hidden="true">
               ${listTitle ? html`
                 <span class="review-context-control">
-                  <button type="button" class="secondary review-context-action" data-review-context-idx="${idx}" aria-expanded="false" aria-controls="review-context-popover-${idx}" tabindex="-1">Look up the context</button>
+                  <button type="button" class="btn-icon secondary review-context-action" data-review-context-idx="${idx}" aria-expanded="false" aria-controls="review-context-popover-${idx}" aria-label="Look up the context" title="Look up the context" tabindex="-1">🔎</button>
                   <span class="review-context-popover" id="review-context-popover-${idx}" role="status" aria-hidden="true"></span>
                 </span>
               ` : ""}
@@ -2733,8 +2734,10 @@ function setReviewExtraActionsOpen(toggleButton, open) {
 
     if (!open) closeReviewContextPopovers(actionsEl);
     toggleButton.setAttribute("aria-expanded", open ? "true" : "false");
-    toggleButton.textContent = open ? "Less" : "More";
-    toggleButton.title = open ? "Hide more actions" : "Show more actions";
+    toggleButton.classList.toggle("is-open", open);
+    const label = open ? "Hide more actions" : "Show more actions";
+    toggleButton.title = label;
+    toggleButton.setAttribute("aria-label", label);
     actionsEl.classList.toggle("is-open", open);
     actionsEl.setAttribute("aria-hidden", open ? "false" : "true");
     actionsEl.querySelectorAll("button").forEach((button) => {
@@ -3180,7 +3183,10 @@ const EN_HOMOPHONE_GROUPS = [
     ["be", "bee"],
     ["break", "brake"],
     ["our", "hour"],
-    ["tart", "taut", "taught"]
+    ["tart", "taut", "taught"],
+    ["bare", "bear"],
+    ["site", "sight"],
+    ["too","two"] 
 ];
 const EN_HOMOPHONE_INDEX = {};
 EN_HOMOPHONE_GROUPS.forEach((group, idx) => {
