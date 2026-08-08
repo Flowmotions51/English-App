@@ -13,8 +13,10 @@ final class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     private func configureWebView() {
         let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
 
         if let apiBaseURL = stringConfigValue(forKey: "APIBaseURL"), !apiBaseURL.isEmpty {
             let source = "window.__ENGLISH_APP_API_BASE__ = \(javaScriptStringLiteral(apiBaseURL));"
@@ -25,6 +27,7 @@ final class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.translatesAutoresizingMaskIntoConstraints = false
 

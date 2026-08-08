@@ -39,9 +39,16 @@ public class ReviewController {
     }
 
     @PostMapping("/sessions/{sessionId}/complete")
-    public ResponseEntity<Map<String, String>> completeSession(@PathVariable Long sessionId) {
-        reviewService.completeSession(currentUserService.getCurrentUser(), sessionId);
-        return ResponseEntity.ok(Map.of("status", "ok"));
+    public ResponseEntity<Map<String, Object>> completeSession(
+            @PathVariable Long sessionId,
+            @RequestBody(required = false) CompleteSessionRequest body
+    ) {
+        List<Long> sentenceIds = body != null ? body.sentenceIds() : null;
+        int remaining = reviewService.completeSession(currentUserService.getCurrentUser(), sessionId, sentenceIds);
+        return ResponseEntity.ok(Map.of("status", "ok", "remainingCount", remaining));
+    }
+
+    public record CompleteSessionRequest(List<Long> sentenceIds) {
     }
 
     @PostMapping("/sentences/{sentenceId}/complete")

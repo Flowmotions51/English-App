@@ -114,6 +114,13 @@ public class ListSentenceService {
                 .toList();
     }
 
+    public List<Map<String, Object>> getExcludedSentences(Long userId) {
+        Map<Long, Long> reviewCounts = sentenceReviewRepository.countReviewsBySentenceForUserAsMap(userId);
+        return sentenceRepository.findExcludedByUserId(userId).stream()
+                .map(s -> sentencePayloadWithListName(s, reviewCounts.getOrDefault(s.getId(), 0L)))
+                .toList();
+    }
+
     public List<Map<String, Object>> findExistingInLists(Long userId, String content) {
         if (content == null || content.trim().isEmpty()) {
             return List.of();
@@ -179,6 +186,19 @@ public class ListSentenceService {
         return sentencePayload(sentence, reviewCount);
     }
 
+    @Transactional
+    public Map<String, Object> setExcludedFromSchedule(Long userId, Long sentenceId, boolean excluded) {
+        Sentence sentence = getSentenceByUser(sentenceId, userId);
+        if (sentence.isExcludedFromSchedule() != excluded) {
+            sentence.setExcludedFromSchedule(excluded);
+            if (!excluded) {
+                sentence.setScheduleResetAt(Instant.now());
+            }
+        }
+        long reviewCount = sentenceReviewRepository.countBySentence_IdAndUser_Id(sentenceId, userId);
+        return sentencePayload(sentence, reviewCount);
+    }
+
     public Sentence getSentenceByUser(Long sentenceId, Long userId) {
         return sentenceRepository.findByIdAndUser(sentenceId, userId)
                 .orElseThrow(() -> new NotFoundException("Sentence not found"));
@@ -196,6 +216,7 @@ public class ListSentenceService {
         payload.put("content", sentence.getContent());
         payload.put("createdAt", sentence.getCreatedAt());
         payload.put("reviewCount", reviewCount);
+        payload.put("excludedFromSchedule", sentence.isExcludedFromSchedule());
         MeaningGroup meaningGroup = sentence.getMeaningGroup();
         if (meaningGroup != null) {
             payload.put("meaningGroupId", meaningGroup.getId());

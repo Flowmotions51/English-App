@@ -58,8 +58,11 @@ let piperLoadPromise = null;
 let currentAudio = null;
 const playbackQueue = [];
 let playbackPlaying = false;
+/** Bumped on every intentional interruption so stale async audio callbacks (onended/onerror/play()) can tell they're obsolete and no-op instead of clobbering newer playback state. */
+let playbackGeneration = 0;
 
 function stopCurrentPlayback() {
+    playbackGeneration++;
     playbackQueue.length = 0;
     playbackPlaying = false;
     if (currentAudio) {
@@ -77,6 +80,16 @@ function stopCurrentPlayback() {
     }
 }
 
+/** navigator.gpu existing doesn't mean requestAdapter() will succeed (blocklisted GPU, disabled HW accel, VM/RDP, etc). */
+async function resolveKokoroDevice() {
+    if (typeof navigator === "undefined" || !navigator.gpu) return { device: "wasm", dtype: "q8" };
+    try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (adapter) return { device: "webgpu", dtype: "fp32" };
+    } catch (_) {}
+    return { device: "wasm", dtype: "q8" };
+}
+
 async function loadKokoro() {
     if (!isKokoroSupported()) return Promise.reject(new Error("Kokoro not supported on this device"));
     if (kokoroTTS) return kokoroTTS;
@@ -84,9 +97,7 @@ async function loadKokoro() {
     kokoroLoadPromise = (async () => {
         kokoroModule = await import(/* webpackIgnore: true */ KOKORO_CDN);
         const { KokoroTTS } = kokoroModule;
-        const hasWebGPU = typeof navigator !== "undefined" && !!navigator.gpu;
-        const device = hasWebGPU ? "webgpu" : "wasm";
-        const dtype = device === "webgpu" ? "fp32" : "q8";
+        const { device, dtype } = await resolveKokoroDevice();
         kokoroTTS = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype, device });
         return kokoroTTS;
     })();
@@ -113,18 +124,17 @@ function playNextInQueue() {
     const blob = playbackQueue.shift();
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
+    const generation = playbackGeneration;
     currentAudio = audio;
-    audio.onended = () => {
+    const advance = () => {
         URL.revokeObjectURL(url);
+        if (generation !== playbackGeneration) return;
         currentAudio = null;
         playNextInQueue();
     };
-    audio.onerror = () => {
-        URL.revokeObjectURL(url);
-        currentAudio = null;
-        playNextInQueue();
-    };
-    audio.play();
+    audio.onended = advance;
+    audio.onerror = advance;
+    audio.play().catch(() => {});
 }
 
 function ttsCacheEvictIfNeeded() {
@@ -256,6 +266,7 @@ export async function speak(text, language = activeTtsLanguage) {
             return;
         }
         try {
+            const streamGeneration = playbackGeneration;
             const tts = await loadKokoro();
             const { TextSplitterStream } = kokoroModule;
             const splitter = new TextSplitterStream();
@@ -265,6 +276,7 @@ export async function speak(text, language = activeTtsLanguage) {
                 for await (const { audio: rawAudio } of stream) {
                     const blob = rawAudio.toBlob();
                     blobs.push(blob);
+                    if (streamGeneration !== playbackGeneration) continue;
                     playbackQueue.push(blob);
                     if (!playbackPlaying) playNextInQueue();
                 }
@@ -272,7 +284,9 @@ export async function speak(text, language = activeTtsLanguage) {
                     ttsCacheEvictIfNeeded();
                     ttsCache.set(key, blobs);
                 }
-                if (playbackQueue.length === 0 && !playbackPlaying) speakWithFallback(t, lang);
+                if (streamGeneration === playbackGeneration && playbackQueue.length === 0 && !playbackPlaying) {
+                    speakWithFallback(t, lang);
+                }
             })();
             splitter.push(t);
             splitter.close();
@@ -296,17 +310,20 @@ export async function speak(text, language = activeTtsLanguage) {
         ttsCache.set(key, cached);
         const url = URL.createObjectURL(cached);
         const audio = new Audio(url);
+        const generation = playbackGeneration;
         currentAudio = audio;
         audio.onended = () => {
             URL.revokeObjectURL(url);
+            if (generation !== playbackGeneration) return;
             currentAudio = null;
         };
         audio.onerror = () => {
             URL.revokeObjectURL(url);
+            if (generation !== playbackGeneration) return;
             currentAudio = null;
             speakWithFallback(t, lang);
         };
-        await audio.play();
+        await audio.play().catch(() => {});
         return;
     }
     try {
@@ -320,17 +337,20 @@ export async function speak(text, language = activeTtsLanguage) {
         ttsCache.set(key, wav);
         const url = URL.createObjectURL(wav);
         const audio = new Audio(url);
+        const generation = playbackGeneration;
         currentAudio = audio;
         audio.onended = () => {
             URL.revokeObjectURL(url);
+            if (generation !== playbackGeneration) return;
             currentAudio = null;
         };
         audio.onerror = () => {
             URL.revokeObjectURL(url);
+            if (generation !== playbackGeneration) return;
             currentAudio = null;
             speakWithFallback(t, lang);
         };
-        await audio.play();
+        await audio.play().catch(() => {});
     } catch (err) {
         console.warn("Piper TTS failed, using fallback:", err);
         speakWithFallback(t, lang);

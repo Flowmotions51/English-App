@@ -94,6 +94,7 @@ public class ScheduleService {
         payload.put("sentenceId", scheduleTemplate.getSentence().getId());
         payload.put("openEnded", scheduleTemplate.isOpenEnded());
         payload.put("endDate", scheduleTemplate.getEndDate());
+        payload.put("excludedFromSchedule", scheduleTemplate.getSentence().isExcludedFromSchedule());
         payload.put("intervalMinutes", scheduleTemplate.getSteps().stream()
                 .map(SentenceScheduleStep::getOffsetMinutes)
                 .toList());

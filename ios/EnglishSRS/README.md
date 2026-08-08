@@ -1,7 +1,7 @@
-# English SRS iOS wrapper
+# Repeat Every Day iOS wrapper
 
-This is a compile-ready native iOS wrapper around the existing static frontend.
-It uses `WKWebView` and includes the repository's `frontend` directory as a bundled resource.
+This is a compile-ready native iOS wrapper around the existing frontend.
+It uses `WKWebView`. Production loads the hosted frontend so the Spring session cookie, frontend, and API all share the same HTTPS origin.
 
 ## Build on macOS
 
@@ -27,20 +27,24 @@ Linux cannot compile or sign iOS apps because that requires Xcode on macOS.
 
 Edit `EnglishSRS/AppConfig.plist` before building:
 
-- `FrontendURL`: when set, the app loads this hosted frontend URL directly.
-- `APIBaseURL`: used when `FrontendURL` is empty and the bundled frontend is loaded from the app.
+- `FrontendURL`: hosted frontend URL loaded by the app. The current default is `https://repeat-every-day.com`.
+- `APIBaseURL`: injected into the frontend as `window.__ENGLISH_APP_API_BASE__`. The current default is `https://repeat-every-day.com/api`.
 
-The current default bundles this repository's frontend and injects:
+For local bundled testing, clear `FrontendURL`. The Xcode project still includes `../../frontend` as a folder resource and the wrapper will load `frontend/index.html` from the app bundle.
 
-```text
-https://repeat-every-day.com/api
-```
-
-If session cookies do not persist in bundled mode, deploy the frontend and backend on the same HTTPS origin and set `FrontendURL` to that frontend URL. That is the most reliable mode for cookie-based Spring sessions inside `WKWebView`.
+For production, keep frontend and backend under the same HTTPS origin. Session auth is cookie-based, not token-based, and same-origin hosted mode is the reliable path for cookie persistence in `WKWebView`.
 
 ## Frontend feature parity
 
-The Xcode project references `../../frontend` as a folder resource. That means current frontend features, including Stats, AI naturalness checks, review voice playback, and the latest review UI, are included on the next Xcode build.
+The hosted frontend keeps the iOS app current after each frontend deploy. Bundled mode also picks up current frontend files on the next Xcode build because the project references `../../frontend`.
+
+Current frontend features covered by this wrapper include:
+
+- `INITIAL`, `REGULAR`, and `WEEKLY_CATCH_UP` review sessions.
+- Partial review-session completion, where completed sentences are saved and unfinished ones stay pending.
+- In-list test reviews counting as the first review, or as a due review when the sentence is currently due.
+- Review speech checking, staged multi-sentence checks, and listen-back playback for the user's recording.
+- Stats, per-sentence stats, AI naturalness checks with backend cache, YouGlish, Playphrase, and attached video links.
 
 The AI naturalness check still runs through the Spring backend. Make sure the backend process has:
 
@@ -53,6 +57,7 @@ The iOS wrapper opens external learning links launched by the frontend, such as 
 
 ## Notes
 
-- The project references `../../frontend` from the Xcode project directory, so new frontend changes are included on the next Xcode build.
+- The project references `../../frontend` from the Xcode project directory for bundled/local builds.
 - `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription` are included for the review speaking flow.
+- The WebView uses the default persistent website data store so cookies survive app relaunches.
 - `NSAllowsArbitraryLoadsInWebContent` is enabled so simulator/dev builds can point to non-HTTPS test servers if needed.

@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Leave FrontendURL empty to bundle and load ../../frontend from this repository. -->
+    <!-- Production default: load the hosted frontend on the same HTTPS origin as the API. -->
     <key>FrontendURL</key>
-    <string></string>
+    <string>https://repeat-every-day.com</string>
 
-    <!-- Used by bundled mode. Must point to the Spring backend /api root with current stats and AI endpoints. -->
+    <!-- Injected as window.__ENGLISH_APP_API_BASE__; also used by bundled mode. -->
     <key>APIBaseURL</key>
     <string>https://repeat-every-day.com/api</string>
 </dict>

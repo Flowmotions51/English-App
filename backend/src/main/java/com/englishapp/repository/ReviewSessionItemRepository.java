@@ -17,4 +17,14 @@ public interface ReviewSessionItemRepository extends JpaRepository<ReviewSession
             order by i.id asc
             """)
     List<ReviewSessionItem> findByReviewSessionId(@Param("sessionId") Long sessionId);
+
+    @Query("""
+            select i from ReviewSessionItem i
+            join fetch i.sentence s
+            left join fetch s.meaningGroup
+            join fetch s.sentenceList
+            where i.reviewSession.id in :sessionIds
+            order by i.reviewSession.id asc, i.id asc
+            """)
+    List<ReviewSessionItem> findByReviewSessionIdIn(@Param("sessionIds") List<Long> sessionIds);
 }

@@ -33,6 +33,9 @@ public class UserAccount {
     @Column(name = "weekly_review_day", nullable = false)
     private Integer weeklyReviewDay = 1;
 
+    @Column(name = "auto_exclude_after_reviews", nullable = false)
+    private Integer autoExcludeAfterReviews = 10;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
 }

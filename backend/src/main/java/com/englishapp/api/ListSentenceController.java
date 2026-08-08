@@ -51,6 +51,11 @@ public class ListSentenceController {
         return listSentenceService.searchSentences(currentUserService.getCurrentUserId(), q);
     }
 
+    @GetMapping("/sentences/excluded")
+    public List<Map<String, Object>> getExcludedSentences() {
+        return listSentenceService.getExcludedSentences(currentUserService.getCurrentUserId());
+    }
+
     @GetMapping("/lists/{listId}/sentences")
     public Object getSentences(
             @PathVariable Long listId,
@@ -78,6 +83,16 @@ public class ListSentenceController {
     public ResponseEntity<Void> deleteSentence(@PathVariable Long sentenceId) {
         listSentenceService.deleteSentence(currentUserService.getCurrentUserId(), sentenceId);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/sentences/{sentenceId}/exclude")
+    public Map<String, Object> excludeSentence(@PathVariable Long sentenceId) {
+        return listSentenceService.setExcludedFromSchedule(currentUserService.getCurrentUserId(), sentenceId, true);
+    }
+
+    @PostMapping("/sentences/{sentenceId}/include")
+    public Map<String, Object> includeSentence(@PathVariable Long sentenceId) {
+        return listSentenceService.setExcludedFromSchedule(currentUserService.getCurrentUserId(), sentenceId, false);
     }
 
     @PostMapping("/sentences/{sentenceId}/move")

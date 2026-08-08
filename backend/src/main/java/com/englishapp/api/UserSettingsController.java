@@ -36,6 +36,7 @@ public class UserSettingsController {
         user.setLanguage(normalizeLanguage(request.language()));
         user.setMergeWindowMinutes(request.mergeWindowMinutes());
         user.setWeeklyReviewDay(request.weeklyReviewDay());
+        user.setAutoExcludeAfterReviews(request.autoExcludeAfterReviews());
         userAccountRepository.save(user);
         return payload(user);
     }
@@ -45,7 +46,8 @@ public class UserSettingsController {
                 "timezone", user.getTimezone(),
                 "language", user.getLanguage(),
                 "mergeWindowMinutes", user.getMergeWindowMinutes(),
-                "weeklyReviewDay", user.getWeeklyReviewDay()
+                "weeklyReviewDay", user.getWeeklyReviewDay(),
+                "autoExcludeAfterReviews", user.getAutoExcludeAfterReviews()
         );
     }
 
@@ -57,7 +59,8 @@ public class UserSettingsController {
             @NotBlank String timezone,
             @NotBlank @Pattern(regexp = "en|sr", message = "Language must be en or sr") String language,
             @Min(10) @Max(10080) Integer mergeWindowMinutes,
-            @Min(1) @Max(7) Integer weeklyReviewDay
+            @Min(1) @Max(7) Integer weeklyReviewDay,
+            @Min(0) @Max(1000) Integer autoExcludeAfterReviews
     ) {
     }
 }

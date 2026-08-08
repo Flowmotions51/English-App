@@ -20,8 +20,11 @@ public interface SentenceRepository extends JpaRepository<Sentence, Long> {
     @Query("select s from Sentence s left join fetch s.meaningGroup where s.id = :sentenceId and s.sentenceList.user.id = :userId")
     Optional<Sentence> findByIdAndUser(@Param("sentenceId") Long sentenceId, @Param("userId") Long userId);
 
-    @Query("select s from Sentence s left join fetch s.meaningGroup where s.sentenceList.user.id = :userId")
+    @Query("select s from Sentence s left join fetch s.meaningGroup where s.sentenceList.user.id = :userId and s.excludedFromSchedule = false")
     List<Sentence> findAllByUserId(@Param("userId") Long userId);
+
+    @Query("select s from Sentence s left join fetch s.meaningGroup left join fetch s.sentenceList where s.sentenceList.user.id = :userId and s.excludedFromSchedule = true order by s.createdAt desc")
+    List<Sentence> findExcludedByUserId(@Param("userId") Long userId);
 
     @Query("select s from Sentence s where s.sentenceList.user.id = :userId and lower(trim(s.content)) = lower(trim(:content))")
     List<Sentence> findByUserAndContentNormalized(@Param("userId") Long userId, @Param("content") String content);

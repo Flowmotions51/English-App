@@ -1,0 +1,2 @@
+ALTER TABLE sentences ADD COLUMN excluded_from_schedule BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sentences ADD COLUMN schedule_reset_at TIMESTAMPTZ NULL;

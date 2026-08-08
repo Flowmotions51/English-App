@@ -40,6 +40,9 @@ const state = {
     statsOverview: null,
     statsLoading: false,
     statsError: null,
+    excludedSentences: null,
+    excludedLoading: false,
+    excludedError: null,
     sentenceStatsLoadingId: null,
     voiceAttemptCountBySentenceId: {},
     sentencesPage: 0,
@@ -667,7 +670,9 @@ function getSentenceListTitle(sentence) {
 function findSentenceById(id) {
     const fromList = state.sentences.find((s) => s.id === id);
     if (fromList) return fromList;
-    return (state.meaningGroupSentences || []).find((s) => s.id === id) || null;
+    const fromGroup = (state.meaningGroupSentences || []).find((s) => s.id === id);
+    if (fromGroup) return fromGroup;
+    return (state.excludedSentences || []).find((s) => s.id === id) || null;
 }
 
 function scrollWindowToTop() {
@@ -883,6 +888,7 @@ function renderSentenceActionsHtml(sentence, options = {}) {
         <button type="button" data-sentence-edit="${sentence.id}" class="btn-icon secondary" title="Edit">✏️</button>
         <button type="button" data-sentence-video="${sentence.id}" class="btn-icon secondary" title="Video links">🎬</button>
         <button type="button" data-sentence-schedule="${sentence.id}" class="btn-icon secondary" title="Schedule">📅</button>
+        <button type="button" data-sentence-toggle-excluded="${sentence.id}" class="btn-icon secondary" title="${sentence.excludedFromSchedule ? "Include in schedule" : "Exclude from schedule (memorized)"}">${sentence.excludedFromSchedule ? "✅" : "🚫"}</button>
         <button type="button" data-sentence-move="${sentence.id}" class="btn-icon secondary" title="Move">➡️</button>
         <button type="button" data-sentence-delete="${sentence.id}" class="btn-icon danger" title="Delete">🗑️</button>
       </div>
@@ -901,9 +907,12 @@ function renderSentenceItemHtml(sentence, options = {}) {
         ? ` · Reviewed ${sentence.reviewCount} time${sentence.reviewCount === 1 ? "" : "s"}`
         : "";
     const groupTintClass = getMeaningGroupTintClass(sentence.meaningGroupId);
+    const excludedBadge = sentence.excludedFromSchedule
+        ? html`<span class="excluded-from-schedule-badge" title="Excluded from schedule">🚫 Excluded</span>`
+        : "";
     return html`
-      <li class="sentence-item ${highlighted ? "selected" : ""} ${groupTintClass}" data-sentence-id="${sentence.id}">
-        <div class="sentence-item-content" data-sentence-select="${sentence.id}">${renderSentenceWithWordLinks(sentence.content)}</div>
+      <li class="sentence-item ${highlighted ? "selected" : ""} ${groupTintClass} ${sentence.excludedFromSchedule ? "is-excluded-from-schedule" : ""}" data-sentence-id="${sentence.id}">
+        <div class="sentence-item-content" data-sentence-select="${sentence.id}">${renderSentenceWithWordLinks(sentence.content)}${excludedBadge}</div>
         <div class="hint sentence-item-meta">${new Date(sentence.createdAt).toLocaleString()}${listMeta}${reviewMeta}</div>
         <div class="row sentence-actions">
           ${renderSentenceActionsHtml(sentence, { inGroupView })}
@@ -957,6 +966,7 @@ function buildMeaningGroupDetailHtml() {
 
 async function loadAppData(options = {}) {
     const { refreshReviewSessions = false } = options;
+    state.excludedSentences = null;
     state.lists = await api.getLists();
     if (refreshReviewSessions) {
         await api.refreshReviewSessions();
@@ -1056,6 +1066,25 @@ function sentenceUnlink(id) {
 async function sentenceSchedule(id) {
     const schedule = await api.getSchedule(id);
     showSentenceActionPopup("schedule", id, schedule);
+}
+
+async function sentenceToggleExcluded(id) {
+    const sentence = findSentenceById(id);
+    if (!sentence) return;
+    try {
+        const updated = sentence.excludedFromSchedule
+            ? await api.includeSentenceInSchedule(id)
+            : await api.excludeSentenceFromSchedule(id);
+        sentence.excludedFromSchedule = updated.excludedFromSchedule;
+    } catch (e) {
+        notify(e.message || "Failed to update schedule exclusion.");
+        return;
+    }
+    state.excludedSentences = null;
+    await refreshAndRender();
+    if (!state.selectedListId && state.currentSection === 5) {
+        await ensureExcludedSentencesLoaded(true);
+    }
 }
 
 async function sentenceVideo(id) {
@@ -1317,6 +1346,24 @@ function showListActionPopup(action, listId, listName) {
     });
 }
 
+function parseIsoDateParts(isoDate) {
+    if (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+        const [year, month, day] = isoDate.split("-").map(Number);
+        return { day, month, year };
+    }
+    const now = new Date();
+    return { day: now.getDate(), month: now.getMonth() + 1, year: now.getFullYear() };
+}
+
+function formatIsoDateParts(year, month, day) {
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${year}-${pad(month)}-${pad(day)}`;
+}
+
 function showSentenceActionPopup(action, sentenceId, data) {
     if (!sentenceActionPopupEl) {
         sentenceActionPopupEl = document.createElement("div");
@@ -1450,28 +1497,74 @@ function showSentenceActionPopup(action, sentenceId, data) {
         });
     } else if (action === "schedule") {
         const s = data || {};
-        const intervals = (s.intervalMinutes || [1440, 2880, 10080, 40320]).join(", ");
+        const intervalDays = (s.intervalMinutes || [1440, 2880, 10080, 40320])
+            .map((minutes) => Math.max(1, Math.round(minutes / 1440)))
+            .join(", ");
+        const excluded = !!s.excludedFromSchedule;
+        const hasEndDate = !!s.endDate;
+        const endDateParts = parseIsoDateParts(s.endDate);
         popup.innerHTML = `
             <h4>📅 Schedule</h4>
-            <label>Intervals (minutes, comma-separated)</label>
-            <input type="text" id="sentencePopupIntervals" value="${escapeHtml(intervals)}" placeholder="1440, 2880, 10080, 40320" />
+            <button type="button" id="sentencePopupToggleExcluded" class="secondary schedule-exclude-toggle">${excluded ? "✅ Include in schedule" : "🚫 Exclude from schedule (memorized)"}</button>
+            ${excluded ? `<p class="hint">This sentence is currently excluded — it will not come up for review.</p>` : ""}
+            <label>Intervals (days, comma-separated)</label>
+            <input type="text" id="sentencePopupIntervals" value="${escapeHtml(intervalDays)}" placeholder="1, 2, 7, 28" />
             <label><input type="checkbox" id="sentencePopupOpenEnded" ${s.openEnded ? "checked" : ""} /> Open-ended weekly after final step</label>
-            <label>End date (YYYY-MM-DD, optional)</label>
-            <input type="text" id="sentencePopupEndDate" value="${escapeHtml(s.endDate || "")}" placeholder="Leave blank for none" />
+            <label><input type="checkbox" id="sentencePopupNoEndDate" ${hasEndDate ? "" : "checked"} /> No end date</label>
+            <div class="schedule-end-date-spinners" id="sentencePopupEndDateSpinners" style="${hasEndDate ? "" : "display:none;"}">
+                <input type="number" class="input-soft" id="sentencePopupEndDay" min="1" max="31" value="${endDateParts.day}" title="Day" />
+                <input type="number" class="input-soft" id="sentencePopupEndMonth" min="1" max="12" value="${endDateParts.month}" title="Month" />
+                <input type="number" class="input-soft" id="sentencePopupEndYear" min="1970" max="2100" value="${endDateParts.year}" title="Year" />
+            </div>
             <div class="popup-actions">
                 <button type="button" class="secondary popup-cancel">Cancel</button>
                 <button type="button" class="popup-save">Save</button>
             </div>
         `;
         popup.querySelector(".popup-cancel").addEventListener("click", closeSentenceActionPopup);
+        popup.querySelector("#sentencePopupToggleExcluded").addEventListener("click", async () => {
+            const sentence = findSentenceById(sentenceId);
+            try {
+                const updated = excluded
+                    ? await api.includeSentenceInSchedule(sentenceId)
+                    : await api.excludeSentenceFromSchedule(sentenceId);
+                if (sentence) sentence.excludedFromSchedule = updated.excludedFromSchedule;
+            } catch (e) {
+                notify(e.message || "Failed to update schedule exclusion.");
+                return;
+            }
+            state.excludedSentences = null;
+            await refreshAndRender();
+            if (!state.selectedListId && state.currentSection === 5) {
+                await ensureExcludedSentencesLoaded(true);
+            }
+            const refreshedSchedule = await api.getSchedule(sentenceId);
+            showSentenceActionPopup("schedule", sentenceId, refreshedSchedule);
+        });
+        const noEndDateCheckbox = popup.querySelector("#sentencePopupNoEndDate");
+        const endDateSpinners = popup.querySelector("#sentencePopupEndDateSpinners");
+        noEndDateCheckbox.addEventListener("change", () => {
+            endDateSpinners.style.display = noEndDateCheckbox.checked ? "none" : "";
+        });
         popup.querySelector(".popup-save").addEventListener("click", async () => {
             const intervalsInput = popup.querySelector("#sentencePopupIntervals").value.trim();
             const openEnded = popup.querySelector("#sentencePopupOpenEnded").checked;
-            const endDateInput = popup.querySelector("#sentencePopupEndDate").value.trim();
+            const noEndDate = popup.querySelector("#sentencePopupNoEndDate").checked;
+            let endDate = null;
+            if (!noEndDate) {
+                const day = Number(popup.querySelector("#sentencePopupEndDay").value);
+                const month = Number(popup.querySelector("#sentencePopupEndMonth").value);
+                const year = Number(popup.querySelector("#sentencePopupEndYear").value);
+                endDate = formatIsoDateParts(year, month, day);
+                if (!endDate) {
+                    notify("Please enter a valid end date.");
+                    return;
+                }
+            }
             await api.updateSchedule(sentenceId, {
-                intervalMinutes: intervalsInput.split(",").map((v) => Number(v.trim())).filter(Boolean),
+                intervalMinutes: intervalsInput.split(",").map((v) => Number(v.trim())).filter(Boolean).map((days) => days * 1440),
                 openEnded,
-                endDate: endDateInput || null
+                endDate
             });
             closeSentenceActionPopup();
             await refreshAndRender();
@@ -2169,6 +2262,52 @@ async function ensureStatsOverviewLoaded(force = false) {
     }
 }
 
+function renderExcludedPanelHtml() {
+    if (state.excludedError) {
+        return html`
+          <h3>🚫 Excluded from schedule</h3>
+          <p class="hint">${escapeHtml(state.excludedError)}</p>
+          <button type="button" id="retryExcludedBtn" class="secondary">Retry</button>
+        `;
+    }
+    if (!state.excludedSentences) {
+        return html`
+          <h3>🚫 Excluded from schedule</h3>
+          <p class="hint">Loading…</p>
+        `;
+    }
+    if (state.excludedSentences.length === 0) {
+        return html`
+          <h3>🚫 Excluded from schedule</h3>
+          <p class="hint">No excluded sentences. Sentences you mark as memorized (excluded from schedule) will show up here so you can bring them back later.</p>
+        `;
+    }
+    return html`
+      <h3>🚫 Excluded from schedule</h3>
+      <p class="hint">Sentences you've marked as memorized. Review them here and include any you still want to practice.</p>
+      <ul class="sentence-list">
+        ${state.excludedSentences.map((sentence) => renderSentenceItemHtml(sentence, { showListName: true })).join("")}
+      </ul>
+    `;
+}
+
+async function ensureExcludedSentencesLoaded(force = false) {
+    if (state.excludedLoading) return;
+    if (!force && state.excludedSentences) return;
+    state.excludedLoading = true;
+    state.excludedError = null;
+    try {
+        state.excludedSentences = await api.getExcludedSentences();
+    } catch (err) {
+        state.excludedError = err.message || "Failed to load excluded sentences.";
+    } finally {
+        state.excludedLoading = false;
+        if (state.view === "dashboard" && !state.selectedListId && state.currentSection === 5) {
+            renderApp();
+        }
+    }
+}
+
 function getNextVoiceAttemptNumber(sentenceId) {
     if (!sentenceId) return 1;
     const key = String(sentenceId);
@@ -2297,6 +2436,7 @@ function renderApp() {
             <button type="button" class="dashboard-tab ${state.currentSection === 2 ? "active" : ""}" data-section="2" role="tab">Settings</button>
             <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
             <button type="button" class="dashboard-tab ${state.currentSection === 4 ? "active" : ""}" data-section="4" role="tab">Stats</button>
+            <button type="button" class="dashboard-tab ${state.currentSection === 5 ? "active" : ""}" data-section="5" role="tab">Excluded</button>
           </div>
         </div>
         ` : ""}
@@ -2358,6 +2498,10 @@ function renderApp() {
                 </select>
               </div>
               <input id="timezoneInput" class="input-soft" value="${escapeHtml(state.settings.timezone)}" placeholder="Timezone, e.g. UTC or Europe/Berlin" />
+              <div class="hint" style="margin-top: 0.75rem;">Automatically exclude a sentence from the schedule once it's been reviewed this many times (0 disables auto-exclude).</div>
+              <div class="row">
+                <input id="autoExcludeAfterReviewsInput" type="number" class="input-soft" min="0" max="1000" value="${state.settings.autoExcludeAfterReviews != null ? state.settings.autoExcludeAfterReviews : 10}" />
+              </div>
               <div class="row auth-language-row" style="margin-top: 0.75rem;">
                 <span class="hint auth-language-label">Learning language</span>
                 <div id="languageInputPicker" class="language-picker" role="listbox" aria-label="Learning language">
@@ -2385,6 +2529,9 @@ function renderApp() {
             <div class="dashboard-panel card stats-panel" data-section="4" style="display: ${state.currentSection === 4 ? "block" : "none"}">
               ${renderStatsPanelHtml()}
             </div>
+            <div class="dashboard-panel card excluded-panel" data-section="5" style="display: ${state.currentSection === 5 ? "block" : "none"}">
+              ${renderExcludedPanelHtml()}
+            </div>
           ` : ""}
         </div>
       </section>
@@ -2397,6 +2544,7 @@ function renderApp() {
     bindLanguagePicker(document.getElementById("languageInputPicker"));
     if (MIND_MAP_ENABLED) renderMindMap();
     if (!state.selectedListId && state.currentSection === 4) ensureStatsOverviewLoaded();
+    if (!state.selectedListId && state.currentSection === 5) ensureExcludedSentencesLoaded();
 
     if (state.selectedListId && state.justOpenedListId === state.selectedListId && !state.openMeaningGroupId) {
         const listDetail = appEl.querySelector(".dashboard-list-detail");
@@ -2595,6 +2743,9 @@ function bindDashboardTabs() {
             }
             if (section === 4) {
                 ensureStatsOverviewLoaded();
+            }
+            if (section === 5) {
+                ensureExcludedSentencesLoaded();
             }
             updateScrollJumpControlsVisibility();
         });
@@ -2837,7 +2988,8 @@ function renderReviewSessionPage() {
         completeBtn.addEventListener("click", () => {
             const incompleteCount = getIncompleteReviewItemCount(session);
             if (incompleteCount > 0) {
-                showIncompleteReviewWarningPopup(incompleteCount, () => completeOpenReviewSession());
+                const completedCount = session.items.length - incompleteCount;
+                showIncompleteReviewWarningPopup(incompleteCount, () => completeOpenReviewSession(), completedCount);
                 return;
             }
             completeOpenReviewSession();
@@ -3186,7 +3338,8 @@ const EN_HOMOPHONE_GROUPS = [
     ["tart", "taut", "taught"],
     ["bare", "bear"],
     ["site", "sight"],
-    ["too","two"] 
+    ["too","two"],
+    ["iffy", "ithy"] // not a homophone; Web Speech API commonly mishears "iffy" as "ithy"
 ];
 const EN_HOMOPHONE_INDEX = {};
 EN_HOMOPHONE_GROUPS.forEach((group, idx) => {
@@ -3677,6 +3830,14 @@ function getIncompleteReviewItemCount(session) {
 async function completeOpenReviewSession() {
     const session = state.openSession;
     if (!session) return;
+    const completedSentenceIds = session.items
+        .filter((_, idx) => !!state.reviewCompletedItems[idx])
+        .map((item) => item.sentenceId);
+    if (completedSentenceIds.length === 0) {
+        notify("No sentences were marked reviewed — nothing was submitted.");
+        return;
+    }
+    const remainingCount = session.items.length - completedSentenceIds.length;
     const sessionPage = appEl.querySelector(".review-session-page");
     const completeBtn = document.getElementById("reviewSessionCompleteBtn");
     try {
@@ -3684,8 +3845,13 @@ async function completeOpenReviewSession() {
             completeBtn.disabled = true;
             completeBtn.textContent = "Marking…";
         }
-        await api.completeReviewSession(session.id);
+        await api.completeReviewSession(session.id, completedSentenceIds);
         state.statsOverview = null;
+        if (remainingCount > 0) {
+            notify(remainingCount === 1
+                ? `Saved ${completedSentenceIds.length} reviewed. 1 sentence will come up in a future session.`
+                : `Saved ${completedSentenceIds.length} reviewed. ${remainingCount} sentences will come up in a future session.`);
+        }
         if (sessionPage) {
             sessionPage.classList.add("review-session-completing");
             let navigated = false;
@@ -4193,10 +4359,16 @@ function closeMarkReviewedConfirmPopup() {
 
 let incompleteReviewWarningEl = null;
 
-function showIncompleteReviewWarningPopup(incompleteCount, onConfirm) {
-    const message = incompleteCount === 1
-        ? "1 sentence hasn't completed all 3 practice stages. Do you still want to mark this session as reviewed?"
-        : `${incompleteCount} sentences haven't completed all 3 practice stages. Do you still want to mark this session as reviewed?`;
+function showIncompleteReviewWarningPopup(incompleteCount, onConfirm, completedCount = 0) {
+    const incompletePart = incompleteCount === 1
+        ? "1 sentence hasn't completed all 3 practice stages."
+        : `${incompleteCount} sentences haven't completed all 3 practice stages.`;
+    const remainderPart = incompleteCount === 1
+        ? "It'll be saved for a future review session"
+        : "They'll be saved for a future review session";
+    const message = completedCount > 0
+        ? `${incompletePart} ${remainderPart} — mark the rest as reviewed now?`
+        : `${incompletePart} Nothing will be submitted unless at least one sentence completes its practice.`;
     if (!incompleteReviewWarningEl) {
         incompleteReviewWarningEl = document.createElement("div");
         incompleteReviewWarningEl.className = "sentence-action-popup-backdrop mark-reviewed-confirm-backdrop";
@@ -4256,6 +4428,11 @@ function bindDashboardActions() {
     const retryStatsBtn = document.getElementById("retryStatsBtn");
     if (retryStatsBtn) {
         retryStatsBtn.addEventListener("click", () => ensureStatsOverviewLoaded(true));
+    }
+
+    const retryExcludedBtn = document.getElementById("retryExcludedBtn");
+    if (retryExcludedBtn) {
+        retryExcludedBtn.addEventListener("click", () => ensureExcludedSentencesLoaded(true));
     }
 
     bindListItemActions();
@@ -4367,6 +4544,10 @@ function bindDashboardActions() {
         button.addEventListener("click", () => sentenceSchedule(Number(button.getAttribute("data-sentence-schedule"))));
     });
 
+    document.querySelectorAll("[data-sentence-toggle-excluded]").forEach((button) => {
+        button.addEventListener("click", () => sentenceToggleExcluded(Number(button.getAttribute("data-sentence-toggle-excluded"))));
+    });
+
     document.querySelectorAll("[data-sentence-video]").forEach((button) => {
         button.addEventListener("click", () => sentenceVideo(Number(button.getAttribute("data-sentence-video"))));
     });
@@ -4374,12 +4555,14 @@ function bindDashboardActions() {
     const saveSettingsBtn = document.getElementById("saveSettingsBtn");
     if (saveSettingsBtn) {
         saveSettingsBtn.addEventListener("click", async () => {
-            await api.updateSettings({
+            const updatedSettings = await api.updateSettings({
                 timezone: document.getElementById("timezoneInput").value.trim() || "UTC",
                 language: getLanguagePickerValue(document.getElementById("languageInputPicker")),
                 mergeWindowMinutes: Number(document.getElementById("mergeWindowInput").value),
-                weeklyReviewDay: Number(document.getElementById("weeklyDayInput").value)
+                weeklyReviewDay: Number(document.getElementById("weeklyDayInput").value),
+                autoExcludeAfterReviews: Number(document.getElementById("autoExcludeAfterReviewsInput").value)
             });
+            state.settings = updatedSettings;
             if (state.user) {
                 state.user.language = getLanguagePickerValue(document.getElementById("languageInputPicker"));
             }

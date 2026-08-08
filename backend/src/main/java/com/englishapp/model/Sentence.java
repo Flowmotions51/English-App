@@ -28,4 +28,10 @@ public class Sentence {
     @ManyToOne(fetch = FetchType.LAZY, optional = true)
     @JoinColumn(name = "meaning_group_id", nullable = true)
     private MeaningGroup meaningGroup;
+
+    @Column(name = "excluded_from_schedule", nullable = false)
+    private boolean excludedFromSchedule = false;
+
+    @Column(name = "schedule_reset_at")
+    private Instant scheduleResetAt;
 }

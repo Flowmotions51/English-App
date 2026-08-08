@@ -61,6 +61,9 @@ export const api = {
     editSentence: (id, payload) => request(`/sentences/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
     deleteSentence: (id) => request(`/sentences/${id}`, { method: "DELETE" }),
     moveSentence: (id, payload) => request(`/sentences/${id}/move`, { method: "POST", body: JSON.stringify(payload) }),
+    excludeSentenceFromSchedule: (id) => request(`/sentences/${id}/exclude`, { method: "POST" }),
+    includeSentenceInSchedule: (id) => request(`/sentences/${id}/include`, { method: "POST" }),
+    getExcludedSentences: () => request("/sentences/excluded"),
 
     getSentenceVideoLinks: (sentenceId) => request(`/sentences/${sentenceId}/video-links`),
     addSentenceVideoLink: (sentenceId, payload) => request(`/sentences/${sentenceId}/video-links`, { method: "POST", body: JSON.stringify(payload) }),
@@ -73,7 +76,10 @@ export const api = {
     /** Rebuilds pending review sessions from schedules; call before getPendingReviews when entering the app. */
     refreshReviewSessions: () => request("/reviews/refresh-sessions", { method: "POST" }),
     openReviewSession: (id) => request(`/reviews/sessions/${id}/open`, { method: "POST" }),
-    completeReviewSession: (id) => request(`/reviews/sessions/${id}/complete`, { method: "POST" }),
+    completeReviewSession: (id, sentenceIds) => request(`/reviews/sessions/${id}/complete`, {
+        method: "POST",
+        body: JSON.stringify(sentenceIds ? { sentenceIds } : {})
+    }),
     completeSentenceReview: (sentenceId) => request(`/reviews/sentences/${sentenceId}/complete`, { method: "POST" }),
 
     getSettings: () => request("/settings"),

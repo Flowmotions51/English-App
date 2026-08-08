@@ -7,6 +7,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class ReviewService {
@@ -57,14 +58,25 @@ public class ReviewService {
             if (schedule == null || schedule.getSteps().isEmpty()) {
                 continue;
             }
-            long reviewed = reviewCounts.getOrDefault(sentence.getId(), 0L);
-            if (reviewed == 0L) {
+            Instant resetAt = sentence.getScheduleResetAt();
+            long reviewed = resetAt != null
+                    ? sentenceReviewRepository.countBySentence_IdAndUser_IdAndReviewedAtGreaterThanEqual(sentence.getId(), user.getId(), resetAt)
+                    : reviewCounts.getOrDefault(sentence.getId(), 0L);
+            // Sentences with zero total reviews are surfaced immediately by planInitialReviewSessions
+            // instead. But a sentence with a reset anchor (excluded then re-included) already has
+            // review history, so it's never picked up there — it must be handled here even when its
+            // reset-scoped review count is 0 (its first occurrence since the reset).
+            if (reviewed == 0L && resetAt == null) {
                 continue;
             }
+            Instant anchor = resetAt != null ? resetAt : sentence.getCreatedAt();
+            Instant lastReviewForSentence = resetAt != null
+                    ? sentenceReviewRepository.lastReviewedAtForSentenceSince(sentence.getId(), user.getId(), resetAt)
+                    : lastReviewedAt.get(sentence.getId());
             Instant dueAt = SchedulePlanner.occurrenceAt(
                     schedule,
-                    sentence.getCreatedAt(),
-                    lastReviewedAt.get(sentence.getId()),
+                    anchor,
+                    lastReviewForSentence,
                     reviewed
             );
             if (dueAt == null || dueAt.isAfter(now)) {
@@ -115,11 +127,17 @@ public class ReviewService {
         List<ReviewSession> existingSessions = reviewSessionRepository
                 .findByUserIdAndStatusOrderByStartAtAscIdAsc(user.getId(), ReviewSessionStatus.PENDING);
         Map<String, ReviewSession> existingByKey = new HashMap<>();
-        for (ReviewSession session : existingSessions) {
-            List<Long> sentenceIds = reviewSessionItemRepository.findByReviewSessionId(session.getId()).stream()
-                    .map(item -> item.getSentence().getId())
-                    .toList();
-            existingByKey.put(sessionKey(session.getKind(), sentenceIds), session);
+        if (!existingSessions.isEmpty()) {
+            List<Long> existingSessionIds = existingSessions.stream().map(ReviewSession::getId).toList();
+            Map<Long, List<Long>> sentenceIdsBySessionId = reviewSessionItemRepository.findByReviewSessionIdIn(existingSessionIds).stream()
+                    .collect(Collectors.groupingBy(
+                            item -> item.getReviewSession().getId(),
+                            Collectors.mapping(item -> item.getSentence().getId(), Collectors.toList())
+                    ));
+            for (ReviewSession session : existingSessions) {
+                List<Long> sentenceIds = sentenceIdsBySessionId.getOrDefault(session.getId(), List.of());
+                existingByKey.put(sessionKey(session.getKind(), sentenceIds), session);
+            }
         }
 
         for (PlannedSession planned : plannedSessions) {
@@ -130,10 +148,11 @@ public class ReviewService {
             }
         }
 
-        for (ReviewSession stale : existingByKey.values()) {
-            reviewNotificationRepository.findByReviewSessionId(stale.getId())
-                    .ifPresent(reviewNotificationRepository::delete);
-            reviewSessionRepository.delete(stale);
+        if (!existingByKey.isEmpty()) {
+            List<ReviewSession> staleSessions = new ArrayList<>(existingByKey.values());
+            List<Long> staleSessionIds = staleSessions.stream().map(ReviewSession::getId).toList();
+            reviewNotificationRepository.deleteAll(reviewNotificationRepository.findByReviewSessionIdIn(staleSessionIds));
+            reviewSessionRepository.deleteAll(staleSessions);
         }
     }
 
@@ -203,15 +222,21 @@ public class ReviewService {
     public List<Map<String, Object>> pendingSessions(UserAccount user) {
         List<ReviewSession> sessions = reviewSessionRepository
                 .findByUserIdAndStatusOrderByStartAtAscIdAsc(user.getId(), ReviewSessionStatus.PENDING);
+        if (sessions.isEmpty()) {
+            return List.of();
+        }
+        List<Long> sessionIds = sessions.stream().map(ReviewSession::getId).toList();
+        Map<Long, List<ReviewSessionItem>> itemsBySessionId = reviewSessionItemRepository.findByReviewSessionIdIn(sessionIds).stream()
+                .collect(Collectors.groupingBy(item -> item.getReviewSession().getId()));
+        Map<Long, Boolean> notificationReadBySessionId = reviewNotificationRepository.findByReviewSessionIdIn(sessionIds).stream()
+                .collect(Collectors.toMap(n -> n.getReviewSession().getId(), ReviewNotification::isRead));
         Instant now = Instant.now();
         return sessions.stream().map(session -> {
-            List<ReviewSessionItem> sessionItems = reviewSessionItemRepository.findByReviewSessionId(session.getId());
+            List<ReviewSessionItem> sessionItems = itemsBySessionId.getOrDefault(session.getId(), List.of());
             List<Map<String, Object>> items = clusterSessionItemsByMeaningGroup(sessionItems).stream()
                     .map(this::sessionItemPayload)
                     .toList();
-            boolean notificationRead = reviewNotificationRepository.findByReviewSessionId(session.getId())
-                    .map(ReviewNotification::isRead)
-                    .orElse(true);
+            boolean notificationRead = notificationReadBySessionId.getOrDefault(session.getId(), true);
             return Map.<String, Object>of(
                     "id", session.getId(),
                     "startAt", session.getStartAt(),
@@ -241,7 +266,7 @@ public class ReviewService {
     }
 
     @Transactional
-    public void completeSession(UserAccount user, Long sessionId) {
+    public int completeSession(UserAccount user, Long sessionId, List<Long> sentenceIds) {
         ReviewSession session = reviewSessionRepository.findByIdAndUserId(sessionId, user.getId())
                 .orElseThrow(() -> new NotFoundException("Review session not found"));
         if (session.getStatus() != ReviewSessionStatus.PENDING) {
@@ -249,21 +274,33 @@ public class ReviewService {
         }
 
         List<ReviewSessionItem> items = reviewSessionItemRepository.findByReviewSessionId(sessionId);
+        Set<Long> targetSentenceIds = sentenceIds != null ? new HashSet<>(sentenceIds) : null;
         Instant now = Instant.now();
+        int remaining = 0;
         for (ReviewSessionItem item : items) {
+            if (targetSentenceIds != null && !targetSentenceIds.contains(item.getSentence().getId())) {
+                remaining++;
+                continue;
+            }
             SentenceReview sentenceReview = new SentenceReview();
             sentenceReview.setUser(user);
             sentenceReview.setSentence(item.getSentence());
             sentenceReview.setReviewSession(session);
             sentenceReview.setReviewedAt(now);
             sentenceReviewRepository.save(sentenceReview);
+            reviewSessionItemRepository.delete(item);
+            maybeAutoExcludeAfterReview(user, item.getSentence());
         }
-        session.setStatus(ReviewSessionStatus.COMPLETED);
-        reviewSessionRepository.save(session);
-        reviewNotificationRepository.findByReviewSessionId(sessionId).ifPresent(notification -> {
-            notification.setRead(true);
-            reviewNotificationRepository.save(notification);
-        });
+
+        if (remaining == 0) {
+            session.setStatus(ReviewSessionStatus.COMPLETED);
+            reviewSessionRepository.save(session);
+            reviewNotificationRepository.findByReviewSessionId(sessionId).ifPresent(notification -> {
+                notification.setRead(true);
+                reviewNotificationRepository.save(notification);
+            });
+        }
+        return remaining;
     }
 
     @Transactional
@@ -272,9 +309,20 @@ public class ReviewService {
                 .orElseThrow(() -> new NotFoundException("Sentence not found"));
         Instant now = Instant.now();
         long reviewCount = sentenceReviewRepository.countBySentence_IdAndUser_Id(sentenceId, user.getId());
+        if (sentence.isExcludedFromSchedule()) {
+            return Map.<String, Object>of(
+                    "recorded", false,
+                    "reason", "EXCLUDED",
+                    "reviewCount", reviewCount
+            );
+        }
+        Instant resetAt = sentence.getScheduleResetAt();
+        long effectiveReviewCount = resetAt != null
+                ? sentenceReviewRepository.countBySentence_IdAndUser_IdAndReviewedAtGreaterThanEqual(sentenceId, user.getId(), resetAt)
+                : reviewCount;
         Instant dueAt = null;
         String reason = "NOT_DUE";
-        boolean shouldRecord = reviewCount == 0L;
+        boolean shouldRecord = effectiveReviewCount == 0L;
         if (shouldRecord) {
             reason = "INITIAL";
         } else {
@@ -282,11 +330,15 @@ public class ReviewService {
             if (schedule.isEmpty()) {
                 reason = "NO_SCHEDULE";
             } else {
+                Instant anchor = resetAt != null ? resetAt : sentence.getCreatedAt();
+                Instant lastReviewAt = resetAt != null
+                        ? sentenceReviewRepository.lastReviewedAtForSentenceSince(sentenceId, user.getId(), resetAt)
+                        : sentenceReviewRepository.lastReviewedAtForSentence(sentenceId, user.getId());
                 dueAt = SchedulePlanner.occurrenceAt(
                         schedule.get(),
-                        sentence.getCreatedAt(),
-                        sentenceReviewRepository.lastReviewedAtForSentence(sentenceId, user.getId()),
-                        reviewCount
+                        anchor,
+                        lastReviewAt,
+                        effectiveReviewCount
                 );
                 shouldRecord = dueAt != null && !dueAt.isAfter(now);
                 if (shouldRecord) {
@@ -308,6 +360,7 @@ public class ReviewService {
         sentenceReview.setSentence(sentence);
         sentenceReview.setReviewedAt(now);
         sentenceReviewRepository.saveAndFlush(sentenceReview);
+        maybeAutoExcludeAfterReview(user, sentence);
         refreshPendingSessions(user);
 
         return Map.<String, Object>of(
@@ -317,6 +370,24 @@ public class ReviewService {
                 "reviewedAt", now,
                 "dueAt", dueAt != null ? dueAt : sentence.getCreatedAt()
         );
+    }
+
+    /** Auto-excludes a sentence once its (reset-aware) review count reaches the user's configured threshold. */
+    private void maybeAutoExcludeAfterReview(UserAccount user, Sentence sentence) {
+        if (sentence.isExcludedFromSchedule()) {
+            return;
+        }
+        Integer threshold = user.getAutoExcludeAfterReviews();
+        if (threshold == null || threshold <= 0) {
+            return;
+        }
+        Instant resetAt = sentence.getScheduleResetAt();
+        long effectiveReviewCount = resetAt != null
+                ? sentenceReviewRepository.countBySentence_IdAndUser_IdAndReviewedAtGreaterThanEqual(sentence.getId(), user.getId(), resetAt)
+                : sentenceReviewRepository.countBySentence_IdAndUser_Id(sentence.getId(), user.getId());
+        if (effectiveReviewCount >= threshold) {
+            sentence.setExcludedFromSchedule(true);
+        }
     }
 
     private ZoneId parseZone(String timezone) {

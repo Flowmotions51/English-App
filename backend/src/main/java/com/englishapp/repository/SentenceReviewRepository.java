@@ -31,6 +31,9 @@ public interface SentenceReviewRepository extends JpaRepository<SentenceReview, 
     @Query("select max(sr.reviewedAt) from SentenceReview sr where sr.sentence.id = :sentenceId and sr.user.id = :userId")
     Instant lastReviewedAtForSentence(@Param("sentenceId") Long sentenceId, @Param("userId") Long userId);
 
+    @Query("select max(sr.reviewedAt) from SentenceReview sr where sr.sentence.id = :sentenceId and sr.user.id = :userId and sr.reviewedAt >= :start")
+    Instant lastReviewedAtForSentenceSince(@Param("sentenceId") Long sentenceId, @Param("userId") Long userId, @Param("start") Instant start);
+
     @Query("select sr.sentence.id, count(sr.id) from SentenceReview sr where sr.user.id = :userId group by sr.sentence.id")
     java.util.List<Object[]> countReviewsBySentenceForUser(@Param("userId") Long userId);
 
