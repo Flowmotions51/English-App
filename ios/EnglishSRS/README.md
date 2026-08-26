@@ -43,7 +43,13 @@ Current frontend features covered by this wrapper include:
 - `INITIAL`, `REGULAR`, and `WEEKLY_CATCH_UP` review sessions.
 - Partial review-session completion, where completed sentences are saved and unfinished ones stay pending.
 - In-list test reviews counting as the first review, or as a due review when the sentence is currently due.
+- Meaning Groups: paraphrases of the same idea shown and reviewed as variants of each other.
+- Sentence schedule exclusion ("mark as memorized"), with optional auto-exclude after a configurable number of reviews.
+- A "Most Reviewed" dashboard tab listing sentences ranked by review count.
+- "Look up the context" reveal (source list name) inside review sessions.
 - Review speech checking, staged multi-sentence checks, and listen-back playback for the user's recording.
+- Mispronounced/missing-word highlighting in voice-check results, so the user can see exactly where an attempt diverged from the target sentence.
+- Natural-voice TTS (Kokoro on desktop-class WebGPU, Piper elsewhere) alongside instant browser TTS, with per-part playback for multi-part sentences and a stop control on both the sentence Listen button and the recorded-voice playback button.
 - Stats, per-sentence stats, AI naturalness checks with backend cache, YouGlish, Playphrase, and attached video links.
 
 The AI naturalness check still runs through the Spring backend. Make sure the backend process has:

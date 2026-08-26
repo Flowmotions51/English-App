@@ -121,6 +121,20 @@ public class ListSentenceService {
                 .toList();
     }
 
+    private static final int MOST_REVIEWED_LIMIT = 50;
+
+    public List<Map<String, Object>> getMostReviewedSentences(Long userId) {
+        Map<Long, Long> reviewCounts = sentenceReviewRepository.countReviewsBySentenceForUserAsMap(userId);
+        return sentenceRepository.findAllIncludingExcludedByUserId(userId).stream()
+                .filter(s -> reviewCounts.getOrDefault(s.getId(), 0L) > 0)
+                .sorted((a, b) -> Long.compare(
+                        reviewCounts.getOrDefault(b.getId(), 0L),
+                        reviewCounts.getOrDefault(a.getId(), 0L)))
+                .limit(MOST_REVIEWED_LIMIT)
+                .map(s -> sentencePayloadWithListName(s, reviewCounts.getOrDefault(s.getId(), 0L)))
+                .toList();
+    }
+
     public List<Map<String, Object>> findExistingInLists(Long userId, String content) {
         if (content == null || content.trim().isEmpty()) {
             return List.of();

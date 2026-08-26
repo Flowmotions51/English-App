@@ -64,6 +64,7 @@ export const api = {
     excludeSentenceFromSchedule: (id) => request(`/sentences/${id}/exclude`, { method: "POST" }),
     includeSentenceInSchedule: (id) => request(`/sentences/${id}/include`, { method: "POST" }),
     getExcludedSentences: () => request("/sentences/excluded"),
+    getMostReviewedSentences: () => request("/sentences/most-reviewed"),
 
     getSentenceVideoLinks: (sentenceId) => request(`/sentences/${sentenceId}/video-links`),
     addSentenceVideoLink: (sentenceId, payload) => request(`/sentences/${sentenceId}/video-links`, { method: "POST", body: JSON.stringify(payload) }),

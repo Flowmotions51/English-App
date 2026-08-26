@@ -56,6 +56,11 @@ public class ListSentenceController {
         return listSentenceService.getExcludedSentences(currentUserService.getCurrentUserId());
     }
 
+    @GetMapping("/sentences/most-reviewed")
+    public List<Map<String, Object>> getMostReviewedSentences() {
+        return listSentenceService.getMostReviewedSentences(currentUserService.getCurrentUserId());
+    }
+
     @GetMapping("/lists/{listId}/sentences")
     public Object getSentences(
             @PathVariable Long listId,

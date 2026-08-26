@@ -48,51 +48,14 @@ body {
     flex: 1;
 }
 
-/* TTS progress bar (waiting for speech) */
-.tts-progress-bar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    z-index: 1002;
-    background: rgba(168, 150, 255, 0.2);
-    overflow: hidden;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s ease;
-}
-
-.tts-progress-bar.is-active {
-    opacity: 1;
-}
-
-.tts-progress-bar-inner {
-    height: 100%;
-    width: 40%;
-    background: rgb(125, 99, 255);
-    border-radius: 0 2px 2px 0;
-    animation: tts-progress-slide 1.2s ease-in-out infinite;
-}
-
-@keyframes tts-progress-slide {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(350%); }
-}
-
-/* TTS loading: sentence-item becomes a progress bar (left-to-right fill, success green) */
-.sentence-item.tts-loading,
-.sentence-item.tts-done,
-.review-sentence-item.tts-loading,
-.review-sentence-item.tts-done {
+/* TTS button progress: the Listen button itself fills left-to-right (success green) while
+   natural voice is loading/generating/playing, then briefly flashes full before clearing. */
+.tts-speak-btn {
     position: relative;
     overflow: hidden;
 }
 
-.sentence-item.tts-loading::before,
-.sentence-item.tts-done::before,
-.review-sentence-item.tts-loading::before,
-.review-sentence-item.tts-done::before {
+.tts-speak-btn::before {
     content: "";
     position: absolute;
     left: 0;
@@ -102,28 +65,19 @@ body {
     background: rgb(86, 214, 122);
     border-radius: 8px;
     pointer-events: none;
+    width: 0;
 }
 
-.sentence-item.tts-loading::before,
-.review-sentence-item.tts-loading::before {
-    width: 0;
+.tts-speak-btn.tts-loading::before {
     animation: tts-sentence-fill 2.8s ease-out forwards;
 }
 
-.sentence-item.tts-done::before,
-.review-sentence-item.tts-done::before {
+.tts-speak-btn.tts-done::before {
     width: 100%;
     transition: opacity 0.25s ease-out;
 }
 
-.sentence-item.tts-loading .sentence-item-content,
-.sentence-item.tts-loading .sentence-item-meta,
-.sentence-item.tts-loading .sentence-actions,
-.sentence-item.tts-done .sentence-item-content,
-.sentence-item.tts-done .sentence-item-meta,
-.sentence-item.tts-done .sentence-actions,
-.review-sentence-item.tts-loading .review-sentence-main,
-.review-sentence-item.tts-done .review-sentence-main {
+.tts-speak-btn .tts-btn-label {
     position: relative;
     z-index: 1;
 }
@@ -2015,6 +1969,13 @@ button.show-lists-btn:active,
     transform: translateX(0) scale(1);
 }
 
+.review-speak.is-speaking,
+.review-voice-playback-button.is-speaking {
+    background: rgb(254, 178, 178);
+    border-color: rgb(185, 28, 28);
+    color: rgb(153, 27, 27);
+}
+
 .review-speak-check.stage-1 {
     background: rgb(220, 212, 255);
     border-color: rgb(125, 99, 255);
@@ -2133,6 +2094,16 @@ button.show-lists-btn:active,
     background: #fee2e2;
     color: #991b1b;
     border: 1px solid #fca5a5;
+}
+
+.review-voice-mismatch-word {
+    background: #fef08a;
+    color: #713f12;
+    border-radius: 3px;
+    padding: 0 3px;
+    font-weight: 700;
+    text-decoration: underline wavy #b45309;
+    text-decoration-thickness: 1.5px;
 }
 
 .test-review-popup .test-review-sentence {

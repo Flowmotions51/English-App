@@ -16,6 +16,11 @@ const PIPER_VOICES = {
 };
 const STORAGE_KEY_NATURAL = "english-app-tts-natural";
 const TTS_CACHE_MAX_SIZE = 80;
+/** No AbortController exists inside kokoro-js's fetch/inference calls, so a stalled download or stuck
+ * WebGPU compute would otherwise await forever. These bound how long we wait with *no progress at all*
+ * before giving up and falling back — a slow-but-progressing load can still take as long as it needs. */
+const KOKORO_LOAD_STALL_MS = 30000;
+const KOKORO_GENERATION_STALL_MS = 30000;
 
 /** In-memory cache: key = `${language}::${text}`, value = Blob[] (Kokoro) or Blob (Piper). LRU eviction. */
 const ttsCache = new Map();
@@ -61,6 +66,24 @@ let playbackPlaying = false;
 /** Bumped on every intentional interruption so stale async audio callbacks (onended/onerror/play()) can tell they're obsolete and no-op instead of clobbering newer playback state. */
 let playbackGeneration = 0;
 
+/**
+ * Only one speak()/speakWithFallback() call is ever "live" at a time (stopCurrentPlayback always
+ * fully stops any prior playback first), so a single pending resolver is enough to let callers
+ * await actual playback completion instead of just "playback started".
+ */
+let playbackDoneResolve = null;
+
+function settlePlaybackDone() {
+    const resolve = playbackDoneResolve;
+    playbackDoneResolve = null;
+    if (resolve) resolve();
+}
+
+function waitForPlaybackDone() {
+    settlePlaybackDone();
+    return new Promise((resolve) => { playbackDoneResolve = resolve; });
+}
+
 function stopCurrentPlayback() {
     playbackGeneration++;
     playbackQueue.length = 0;
@@ -78,6 +101,7 @@ function stopCurrentPlayback() {
     if (window.speechSynthesis) {
         window.speechSynthesis.cancel();
     }
+    settlePlaybackDone();
 }
 
 /** navigator.gpu existing doesn't mean requestAdapter() will succeed (blocklisted GPU, disabled HW accel, VM/RDP, etc). */
@@ -85,9 +109,28 @@ async function resolveKokoroDevice() {
     if (typeof navigator === "undefined" || !navigator.gpu) return { device: "wasm", dtype: "q8" };
     try {
         const adapter = await navigator.gpu.requestAdapter();
-        if (adapter) return { device: "webgpu", dtype: "fp32" };
+        if (adapter) {
+            // fp16 halves the download vs. fp32 and is broadly supported (Apple Silicon, most modern
+            // discrete/integrated GPUs); only fall back to the larger fp32 build when the adapter lacks it.
+            const dtype = adapter.features?.has("shader-f16") ? "fp16" : "fp32";
+            return { device: "webgpu", dtype };
+        }
     } catch (_) {}
     return { device: "wasm", dtype: "q8" };
+}
+
+/** Rejects if ping() isn't called within idleMs of the last call (or of creation). Lets an operation that
+ * keeps making progress run indefinitely while still catching a true stall/hang. */
+function createStallWatchdog(idleMs, message) {
+    let timer = null;
+    let reject = null;
+    const promise = new Promise((_, rej) => { reject = rej; });
+    const ping = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => reject(new Error(message)), idleMs);
+    };
+    ping();
+    return { ping, promise, cancel: () => clearTimeout(timer) };
 }
 
 async function loadKokoro() {
@@ -98,9 +141,23 @@ async function loadKokoro() {
         kokoroModule = await import(/* webpackIgnore: true */ KOKORO_CDN);
         const { KokoroTTS } = kokoroModule;
         const { device, dtype } = await resolveKokoroDevice();
-        kokoroTTS = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype, device });
+        const watchdog = createStallWatchdog(KOKORO_LOAD_STALL_MS, "Kokoro model download stalled");
+        try {
+            const loadPromise = KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
+                dtype,
+                device,
+                progress_callback: () => watchdog.ping()
+            });
+            loadPromise.catch(() => {}); // avoid an unhandled rejection if this loses the race below
+            kokoroTTS = await Promise.race([loadPromise, watchdog.promise]);
+        } finally {
+            watchdog.cancel();
+        }
         return kokoroTTS;
-    })();
+    })().catch((err) => {
+        kokoroLoadPromise = null; // let the next speak() retry instead of replaying this failure forever
+        throw err;
+    });
     return kokoroLoadPromise;
 }
 
@@ -110,7 +167,10 @@ async function loadPiper() {
     piperLoadPromise = (async () => {
         piperModule = await import(/* webpackIgnore: true */ PIPER_CDN);
         return piperModule;
-    })();
+    })().catch((err) => {
+        piperLoadPromise = null;
+        throw err;
+    });
     return piperLoadPromise;
 }
 
@@ -118,6 +178,7 @@ function playNextInQueue() {
     if (playbackQueue.length === 0) {
         playbackPlaying = false;
         currentAudio = null;
+        settlePlaybackDone();
         return;
     }
     playbackPlaying = true;
@@ -135,6 +196,28 @@ function playNextInQueue() {
     audio.onended = advance;
     audio.onerror = advance;
     audio.play().catch(() => {});
+}
+
+/** Plays a single blob outside the queue (Piper) and resolves once it truly finishes (end, error, or interruption). Resolves true on error so the caller can fall back. */
+function playBlobAndWait(blob) {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    const generation = playbackGeneration;
+    currentAudio = audio;
+    let failed = false;
+    const finish = (didFail) => {
+        URL.revokeObjectURL(url);
+        if (generation === playbackGeneration) {
+            currentAudio = null;
+            failed = didFail;
+        }
+        settlePlaybackDone();
+    };
+    const donePromise = waitForPlaybackDone();
+    audio.onended = () => finish(false);
+    audio.onerror = () => finish(true);
+    audio.play().catch(() => finish(true));
+    return donePromise.then(() => failed);
 }
 
 function ttsCacheEvictIfNeeded() {
@@ -156,12 +239,16 @@ function pickSpeechVoice(language) {
 }
 
 function speakWithFallback(text, language = activeTtsLanguage) {
-    if (!window.speechSynthesis) return;
+    if (!window.speechSynthesis) return Promise.resolve();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = getSpeechLocale(language);
     const voice = pickSpeechVoice(language);
     if (voice) utterance.voice = voice;
+    const donePromise = waitForPlaybackDone();
+    utterance.onend = () => settlePlaybackDone();
+    utterance.onerror = () => settlePlaybackDone();
     window.speechSynthesis.speak(utterance);
+    return donePromise;
 }
 
 /**
@@ -251,7 +338,7 @@ export async function speak(text, language = activeTtsLanguage) {
     const usePiper = useNatural && !useKokoro;
 
     if (!useNatural) {
-        speakWithFallback(t, lang);
+        await speakWithFallback(t, lang);
         return;
     }
 
@@ -263,6 +350,7 @@ export async function speak(text, language = activeTtsLanguage) {
             ttsCache.set(key, cached);
             playbackQueue.push(...cached);
             playNextInQueue();
+            await waitForPlaybackDone();
             return;
         }
         try {
@@ -272,34 +360,52 @@ export async function speak(text, language = activeTtsLanguage) {
             const splitter = new TextSplitterStream();
             const stream = tts.stream(splitter, { voice: KOKORO_VOICE });
             const blobs = [];
+            let streamAbandoned = false;
+            const watchdog = createStallWatchdog(KOKORO_GENERATION_STALL_MS, "Kokoro speech generation stalled");
             const consumeStream = (async () => {
                 for await (const { audio: rawAudio } of stream) {
+                    // Once we've given up waiting (watchdog fired below), stop feeding a possibly-newer
+                    // playback: the generator itself can't be cancelled, so let it run out in the background.
+                    if (streamAbandoned) continue;
+                    watchdog.ping();
                     const blob = rawAudio.toBlob();
                     blobs.push(blob);
                     if (streamGeneration !== playbackGeneration) continue;
                     playbackQueue.push(blob);
                     if (!playbackPlaying) playNextInQueue();
                 }
-                if (blobs.length > 0) {
+                if (!streamAbandoned && blobs.length > 0) {
                     ttsCacheEvictIfNeeded();
                     ttsCache.set(key, blobs);
                 }
-                if (streamGeneration === playbackGeneration && playbackQueue.length === 0 && !playbackPlaying) {
-                    speakWithFallback(t, lang);
-                }
             })();
+            consumeStream.catch(() => {}); // avoid an unhandled rejection if this loses the race below
             splitter.push(t);
             splitter.close();
-            await consumeStream;
+            try {
+                await Promise.race([consumeStream, watchdog.promise]);
+            } catch (err) {
+                streamAbandoned = true;
+                throw err;
+            } finally {
+                watchdog.cancel();
+            }
+            if (streamGeneration === playbackGeneration) {
+                if (playbackPlaying || playbackQueue.length > 0) {
+                    await waitForPlaybackDone();
+                } else {
+                    await speakWithFallback(t, lang);
+                }
+            }
         } catch (err) {
             console.warn("Kokoro TTS failed, using fallback:", err);
-            speakWithFallback(t, lang);
+            await speakWithFallback(t, lang);
         }
         return;
     }
 
     if (!usePiper) {
-        speakWithFallback(t, lang);
+        await speakWithFallback(t, lang);
         return;
     }
 
@@ -308,52 +414,24 @@ export async function speak(text, language = activeTtsLanguage) {
     if (cached && cached instanceof Blob) {
         ttsCache.delete(key);
         ttsCache.set(key, cached);
-        const url = URL.createObjectURL(cached);
-        const audio = new Audio(url);
-        const generation = playbackGeneration;
-        currentAudio = audio;
-        audio.onended = () => {
-            URL.revokeObjectURL(url);
-            if (generation !== playbackGeneration) return;
-            currentAudio = null;
-        };
-        audio.onerror = () => {
-            URL.revokeObjectURL(url);
-            if (generation !== playbackGeneration) return;
-            currentAudio = null;
-            speakWithFallback(t, lang);
-        };
-        await audio.play().catch(() => {});
+        const failed = await playBlobAndWait(cached);
+        if (failed) await speakWithFallback(t, lang);
         return;
     }
     try {
         const tts = await loadPiper();
         const wav = await tts.predict({ text: t, voiceId: getPiperVoice(lang) });
         if (!wav) {
-            speakWithFallback(t, lang);
+            await speakWithFallback(t, lang);
             return;
         }
         ttsCacheEvictIfNeeded();
         ttsCache.set(key, wav);
-        const url = URL.createObjectURL(wav);
-        const audio = new Audio(url);
-        const generation = playbackGeneration;
-        currentAudio = audio;
-        audio.onended = () => {
-            URL.revokeObjectURL(url);
-            if (generation !== playbackGeneration) return;
-            currentAudio = null;
-        };
-        audio.onerror = () => {
-            URL.revokeObjectURL(url);
-            if (generation !== playbackGeneration) return;
-            currentAudio = null;
-            speakWithFallback(t, lang);
-        };
-        await audio.play().catch(() => {});
+        const failed = await playBlobAndWait(wav);
+        if (failed) await speakWithFallback(t, lang);
     } catch (err) {
         console.warn("Piper TTS failed, using fallback:", err);
-        speakWithFallback(t, lang);
+        await speakWithFallback(t, lang);
     }
 }
 

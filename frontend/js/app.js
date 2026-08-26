@@ -1,5 +1,5 @@
 import { api } from "./api.js?v=2";
-import { speak, preload as preloadTTS, getUseNaturalTts, setUseNaturalTts, setTtsLanguage, getNaturalTtsHint, applyDefaultNaturalTtsForLanguage } from "./tts.js";
+import { speak, cancelSpeak, preload as preloadTTS, getUseNaturalTts, setUseNaturalTts, setTtsLanguage, getNaturalTtsHint, applyDefaultNaturalTtsForLanguage } from "./tts.js";
 import { getSpeechLocale, normalizeAppLanguage, getLanguageConfig, languagePickerHtml, bindLanguagePicker, getLanguagePickerValue } from "./language.js";
 
 /** Mind map UI disabled until feature is ready. */
@@ -43,6 +43,9 @@ const state = {
     excludedSentences: null,
     excludedLoading: false,
     excludedError: null,
+    mostReviewedSentences: null,
+    mostReviewedLoading: false,
+    mostReviewedError: null,
     sentenceStatsLoadingId: null,
     voiceAttemptCountBySentenceId: {},
     sentencesPage: 0,
@@ -878,7 +881,7 @@ function renderSentenceActionsHtml(sentence, options = {}) {
     const showUnlink = inGroupView || !!sentence.meaningGroupId;
     return html`
       <div class="sentence-actions-main">
-        <button type="button" data-sentence-speak="${sentence.id}" class="btn-icon secondary" title="Listen">🔊</button>
+        <button type="button" data-sentence-speak="${sentence.id}" class="btn-icon secondary tts-speak-btn" title="Listen"><span class="tts-btn-label">🔊</span></button>
         <button type="button" data-sentence-playphrase="${sentence.id}" class="btn-icon secondary" title="Play phrase (playphrase.me)">▶️</button>
         <button type="button" data-sentence-youglish="${sentence.id}" class="btn-icon secondary" title="Pronounce (YouGlish)">🔤</button>
         <button type="button" data-sentence-test-review="${sentence.id}" class="btn-icon secondary" title="Test review">📋</button>
@@ -967,6 +970,7 @@ function buildMeaningGroupDetailHtml() {
 async function loadAppData(options = {}) {
     const { refreshReviewSessions = false } = options;
     state.excludedSentences = null;
+    state.mostReviewedSentences = null;
     state.lists = await api.getLists();
     if (refreshReviewSessions) {
         await api.refreshReviewSessions();
@@ -993,55 +997,37 @@ async function loadAppData(options = {}) {
     }
 }
 
-let ttsProgressBarEl = null;
-
-function showTtsProgress() {
-    if (!ttsProgressBarEl) {
-        ttsProgressBarEl = document.createElement("div");
-        ttsProgressBarEl.id = "ttsProgressBar";
-        ttsProgressBarEl.className = "tts-progress-bar";
-        ttsProgressBarEl.setAttribute("aria-live", "polite");
-        ttsProgressBarEl.setAttribute("aria-label", "Preparing speech");
-        ttsProgressBarEl.innerHTML = '<div class="tts-progress-bar-inner"></div>';
-        document.body.appendChild(ttsProgressBarEl);
-    }
-    ttsProgressBarEl.classList.add("is-active");
-}
-
-function hideTtsProgress() {
-    if (ttsProgressBarEl) ttsProgressBarEl.classList.remove("is-active");
-}
-
-/** Show TTS loading: in-item progress bar when natural voice + item el given, else global bar. */
-function showTtsProgressOnItem(itemEl) {
-    if (getUseNaturalTts() && itemEl) {
-        itemEl.classList.remove("tts-done");
-        itemEl.classList.add("tts-loading");
-    } else if (getUseNaturalTts()) {
-        showTtsProgress();
+/** Toggles a filling progress bar directly on a TTS button while natural voice is generating/playing. */
+function setTtsButtonProgress(button, isLoading) {
+    if (!button || !getUseNaturalTts()) return;
+    if (isLoading) {
+        button.classList.remove("tts-done");
+        button.classList.add("tts-loading");
+    } else {
+        button.classList.remove("tts-loading");
+        button.classList.add("tts-done");
+        setTimeout(() => button.classList.remove("tts-done"), 300);
     }
 }
 
-/** Hide TTS loading: animate to full then clear; or hide global bar. */
-function hideTtsProgressOnItem(itemEl) {
-    if (getUseNaturalTts() && itemEl) {
-        itemEl.classList.remove("tts-loading");
-        itemEl.classList.add("tts-done");
-        setTimeout(() => itemEl.classList.remove("tts-done"), 300);
-    } else if (getUseNaturalTts()) {
-        hideTtsProgress();
-    }
+/** Toggles a "Listen" button into a "Stop" button while TTS is playing, and back when it ends. */
+function setSpeakButtonSpeaking(button, isSpeaking) {
+    if (!button) return;
+    button.classList.toggle("is-speaking", isSpeaking);
+    const label = button.querySelector(".tts-btn-label") || button;
+    label.textContent = isSpeaking ? "⏹" : "🔊";
+    button.title = isSpeaking ? "Stop" : "Listen";
 }
 
 async function sentenceSpeak(id) {
     const sentence = findSentenceById(id);
     if (!sentence || !sentence.content) return;
-    const itemEl = document.querySelector(`.sentence-item[data-sentence-id="${id}"]`);
-    showTtsProgressOnItem(itemEl);
+    const button = document.querySelector(`[data-sentence-speak="${id}"]`);
+    setTtsButtonProgress(button, true);
     try {
         await speak(sentence.content, getAppLanguage());
     } finally {
-        hideTtsProgressOnItem(itemEl);
+        setTtsButtonProgress(button, false);
     }
 }
 
@@ -2291,6 +2277,52 @@ function renderExcludedPanelHtml() {
     `;
 }
 
+function renderMostReviewedPanelHtml() {
+    if (state.mostReviewedError) {
+        return html`
+          <h3>🔁 Most reviewed</h3>
+          <p class="hint">${escapeHtml(state.mostReviewedError)}</p>
+          <button type="button" id="retryMostReviewedBtn" class="secondary">Retry</button>
+        `;
+    }
+    if (!state.mostReviewedSentences) {
+        return html`
+          <h3>🔁 Most reviewed</h3>
+          <p class="hint">Loading…</p>
+        `;
+    }
+    if (state.mostReviewedSentences.length === 0) {
+        return html`
+          <h3>🔁 Most reviewed</h3>
+          <p class="hint">No reviewed sentences yet. Sentences you've reviewed will show up here, most-reviewed first.</p>
+        `;
+    }
+    return html`
+      <h3>🔁 Most reviewed</h3>
+      <p class="hint">Your most-reviewed sentences, ranked by review count.</p>
+      <ul class="sentence-list">
+        ${state.mostReviewedSentences.map((sentence) => renderSentenceItemHtml(sentence, { showListName: true })).join("")}
+      </ul>
+    `;
+}
+
+async function ensureMostReviewedSentencesLoaded(force = false) {
+    if (state.mostReviewedLoading) return;
+    if (!force && state.mostReviewedSentences) return;
+    state.mostReviewedLoading = true;
+    state.mostReviewedError = null;
+    try {
+        state.mostReviewedSentences = await api.getMostReviewedSentences();
+    } catch (err) {
+        state.mostReviewedError = err.message || "Failed to load most reviewed sentences.";
+    } finally {
+        state.mostReviewedLoading = false;
+        if (state.view === "dashboard" && !state.selectedListId && state.currentSection === 6) {
+            renderApp();
+        }
+    }
+}
+
 async function ensureExcludedSentencesLoaded(force = false) {
     if (state.excludedLoading) return;
     if (!force && state.excludedSentences) return;
@@ -2437,6 +2469,7 @@ function renderApp() {
             <button type="button" class="dashboard-tab ${state.currentSection === 3 ? "active" : ""}" data-section="3" role="tab">Mind Map</button>
             <button type="button" class="dashboard-tab ${state.currentSection === 4 ? "active" : ""}" data-section="4" role="tab">Stats</button>
             <button type="button" class="dashboard-tab ${state.currentSection === 5 ? "active" : ""}" data-section="5" role="tab">Excluded</button>
+            <button type="button" class="dashboard-tab ${state.currentSection === 6 ? "active" : ""}" data-section="6" role="tab">Most Reviewed</button>
           </div>
         </div>
         ` : ""}
@@ -2532,6 +2565,9 @@ function renderApp() {
             <div class="dashboard-panel card excluded-panel" data-section="5" style="display: ${state.currentSection === 5 ? "block" : "none"}">
               ${renderExcludedPanelHtml()}
             </div>
+            <div class="dashboard-panel card most-reviewed-panel" data-section="6" style="display: ${state.currentSection === 6 ? "block" : "none"}">
+              ${renderMostReviewedPanelHtml()}
+            </div>
           ` : ""}
         </div>
       </section>
@@ -2545,6 +2581,7 @@ function renderApp() {
     if (MIND_MAP_ENABLED) renderMindMap();
     if (!state.selectedListId && state.currentSection === 4) ensureStatsOverviewLoaded();
     if (!state.selectedListId && state.currentSection === 5) ensureExcludedSentencesLoaded();
+    if (!state.selectedListId && state.currentSection === 6) ensureMostReviewedSentencesLoaded();
 
     if (state.selectedListId && state.justOpenedListId === state.selectedListId && !state.openMeaningGroupId) {
         const listDetail = appEl.querySelector(".dashboard-list-detail");
@@ -2747,6 +2784,9 @@ function bindDashboardTabs() {
             if (section === 5) {
                 ensureExcludedSentencesLoaded();
             }
+            if (section === 6) {
+                ensureMostReviewedSentencesLoaded();
+            }
             updateScrollJumpControlsVisibility();
         });
     });
@@ -2835,7 +2875,7 @@ function renderReviewSentenceItemHtml(item, idx, groupId) {
             <div class="review-sentence-content">${renderSentenceWithWordLinks(item.content)}</div>
           </div>
           <div class="review-sentence-buttons">
-            <button type="button" class="btn-icon secondary review-speak" data-review-speak-idx="${idx}" title="Listen">🔊</button>
+            <button type="button" class="btn-icon secondary review-speak tts-speak-btn" data-review-speak-idx="${idx}" title="Listen"><span class="tts-btn-label">🔊</span></button>
             <button type="button" class="btn-icon secondary review-naturalness" data-review-naturalness-idx="${idx}" title="AI naturalness check">✨</button>
             <button type="button" class="btn-icon secondary review-speak-check stage-1" data-review-speak-check-idx="${idx}" title="Speak and check (stage 1: full sentence)">🎤</button>
             <button type="button" class="btn-icon secondary review-more-toggle" data-review-more-idx="${idx}" aria-expanded="false" aria-controls="review-extra-actions-${idx}" aria-label="Show more actions" title="Show more actions">›</button>
@@ -3001,12 +3041,20 @@ function renderReviewSessionPage() {
             const idx = parseInt(button.getAttribute("data-review-speak-idx"), 10);
             const item = session.items[idx];
             if (!item || !item.content) return;
-            const itemEl = appEl.querySelector(`.review-sentence-item[data-review-idx="${idx}"]`);
-            showTtsProgressOnItem(itemEl);
+            if (button.classList.contains("is-speaking")) {
+                cancelSpeak();
+                return;
+            }
+            const parts = getReviewVoiceCheckParts(item.content);
+            const partIndex = getReviewVoiceCheckPartIndex(parts, state.reviewSpeakCheckPart[idx]);
+            const textToSpeak = parts[partIndex] || item.content;
+            setTtsButtonProgress(button, true);
+            setSpeakButtonSpeaking(button, true);
             try {
-                await speak(item.content, getAppLanguage());
+                await speak(textToSpeak, getAppLanguage());
             } finally {
-                hideTtsProgressOnItem(itemEl);
+                setSpeakButtonSpeaking(button, false);
+                setTtsButtonProgress(button, false);
             }
         });
     });
@@ -3339,7 +3387,9 @@ const EN_HOMOPHONE_GROUPS = [
     ["bare", "bear"],
     ["site", "sight"],
     ["too","two"],
-    ["iffy", "ithy"] // not a homophone; Web Speech API commonly mishears "iffy" as "ithy"
+    ["iffy", "ithy"], // not a homophone; Web Speech API commonly mishears "iffy" as "ithy"
+    ["holy", "holey"],
+    ["least","leased"]
 ];
 const EN_HOMOPHONE_INDEX = {};
 EN_HOMOPHONE_GROUPS.forEach((group, idx) => {
@@ -3413,6 +3463,59 @@ function isVoiceMatch(expectedNormalized, heardText) {
     if (!expectedNormalized || !heardNormalized) return false;
     return heardNormalized === expectedNormalized ||
         areHomophoneEquivalentNormalized(expectedNormalized, heardNormalized);
+}
+
+/** Per-word (not whole-string) normalization for the mismatch-highlight diff below: keeps word count 1:1 with the displayed sentence, unlike normalizeForComparison's multi-word number collapsing. */
+function normalizeWordForDiff(word) {
+    const lower = (word || "").toLowerCase();
+    const stripped = getAppLanguage() === "sr" ? stripDiacritics(lower) : lower;
+    return stripped.replace(/['‘’`]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/**
+ * Longest-common-subsequence alignment between the expected words and what was heard.
+ * Returns a boolean per expected word: true if it was said correctly (in order), false if it
+ * was mispronounced, skipped, or replaced.
+ */
+function computeWordMatchMask(expectedWords, heardWords) {
+    const n = expectedWords.length;
+    const m = heardWords.length;
+    const eq = (i, j) => expectedWords[i] === heardWords[j] || areHomophoneEquivalentWord(expectedWords[i], heardWords[j]);
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+            dp[i][j] = eq(i, j) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+    }
+    const matched = new Array(n).fill(false);
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+        if (eq(i, j)) {
+            matched[i] = true;
+            i++;
+            j++;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+            i++;
+        } else {
+            j++;
+        }
+    }
+    return matched;
+}
+
+/** Renders the expected sentence with words the user mispronounced/omitted highlighted. */
+function renderExpectedWithMismatchHighlight(expectedContent, heardText) {
+    const words = (expectedContent || "").split(/\s+/).filter(Boolean);
+    if (words.length === 0) return escapeHtml(expectedContent || "");
+    const expectedNormalizedWords = words.map(normalizeWordForDiff);
+    const heardNormalizedWords = (heardText || "").split(/\s+/).filter(Boolean).map(normalizeWordForDiff).filter(Boolean);
+    const matched = computeWordMatchMask(expectedNormalizedWords, heardNormalizedWords);
+    return words
+        .map((word, idx) => {
+            const cls = matched[idx] ? "review-voice-expected-word" : "review-voice-expected-word review-voice-mismatch-word";
+            return `<span class="${cls}">${escapeHtml(word)}</span>`;
+        })
+        .join(" ");
 }
 
 function isSafariOrAppleWebKit() {
@@ -3580,6 +3683,11 @@ function appendReviewVoiceRecordingPlayback(resultEl, recordingBlob) {
     audioEl.preload = "metadata";
 
     listenBtn.addEventListener("click", async () => {
+        if (!audioEl.paused) {
+            audioEl.pause();
+            audioEl.currentTime = 0;
+            return;
+        }
         audioEl.currentTime = 0;
         try {
             await audioEl.play();
@@ -3587,6 +3695,17 @@ function appendReviewVoiceRecordingPlayback(resultEl, recordingBlob) {
             // Some browsers block playback until another user gesture; the click above usually satisfies it.
         }
     });
+
+    const resetListenBtn = () => {
+        listenBtn.textContent = "Listen to your recording";
+        listenBtn.classList.remove("is-speaking");
+    };
+    audioEl.addEventListener("play", () => {
+        listenBtn.textContent = "⏹ Stop";
+        listenBtn.classList.add("is-speaking");
+    });
+    audioEl.addEventListener("pause", resetListenBtn);
+    audioEl.addEventListener("ended", resetListenBtn);
 
     playbackEl.appendChild(listenBtn);
     playbackEl.appendChild(audioEl);
@@ -3686,7 +3805,7 @@ async function runVoiceCheck(expectedContent, resultEl, buttonEl, onCheckEnd, op
         if (match) {
             resultEl.innerHTML = `${partHtml}✓ Match! You said it correctly.`;
         } else {
-            resultEl.innerHTML = `${partHtml}✗ You said: <strong>${escapeHtml(transcript.trim() || "(no speech heard)")}</strong><br>Expected: ${escapeHtml(expectedContent)}`;
+            resultEl.innerHTML = `${partHtml}✗ You said: <strong>${escapeHtml(transcript.trim() || "(no speech heard)")}</strong><br>Expected: ${renderExpectedWithMismatchHighlight(expectedContent, transcript)}`;
         }
         await appendRecordingIfCurrent();
         finish(match);
@@ -4121,7 +4240,7 @@ function openTestReviewPopup(sentenceId) {
         <h4>Test review</h4>
         <p class="test-review-sentence"></p>
         <div class="row test-review-buttons">
-          <button type="button" class="btn-icon secondary test-review-listen" title="Listen">🔊</button>
+          <button type="button" class="btn-icon secondary test-review-listen tts-speak-btn" title="Listen"><span class="tts-btn-label">🔊</span></button>
           <button type="button" class="btn-icon secondary test-review-speak-check stage-1" title="Speak and check (stage 1: full sentence)">🎤</button>
         </div>
         <div class="review-voice-result test-review-voice-result" style="display:none;"></div>
@@ -4153,11 +4272,11 @@ function openTestReviewPopup(sentenceId) {
     updateTestReviewSpeakCheckButtonTitle(sentence, speakCheckBtn);
 
     listenBtn.addEventListener("click", async () => {
-        showTtsProgress();
+        setTtsButtonProgress(listenBtn, true);
         try {
             await speak(sentence.content, getAppLanguage());
         } finally {
-            hideTtsProgress();
+            setTtsButtonProgress(listenBtn, false);
         }
     });
 
@@ -4433,6 +4552,11 @@ function bindDashboardActions() {
     const retryExcludedBtn = document.getElementById("retryExcludedBtn");
     if (retryExcludedBtn) {
         retryExcludedBtn.addEventListener("click", () => ensureExcludedSentencesLoaded(true));
+    }
+
+    const retryMostReviewedBtn = document.getElementById("retryMostReviewedBtn");
+    if (retryMostReviewedBtn) {
+        retryMostReviewedBtn.addEventListener("click", () => ensureMostReviewedSentencesLoaded(true));
     }
 
     bindListItemActions();

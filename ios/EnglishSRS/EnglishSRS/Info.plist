@@ -28,9 +28,9 @@
         <true/>
     </dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>English SRS uses the microphone so you can speak review sentences.</string>
+    <string>Repeat Every Day uses the microphone so you can speak review sentences.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>English SRS checks spoken review sentences against the expected text.</string>
+    <string>Repeat Every Day checks spoken review sentences against the expected text.</string>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>
