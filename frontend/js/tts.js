@@ -18,9 +18,14 @@ const STORAGE_KEY_NATURAL = "english-app-tts-natural";
 const TTS_CACHE_MAX_SIZE = 80;
 /** No AbortController exists inside kokoro-js's fetch/inference calls, so a stalled download or stuck
  * WebGPU compute would otherwise await forever. These bound how long we wait with *no progress at all*
- * before giving up and falling back — a slow-but-progressing load can still take as long as it needs. */
-const KOKORO_LOAD_STALL_MS = 30000;
-const KOKORO_GENERATION_STALL_MS = 30000;
+ * before giving up and falling back — a slow-but-progressing load can still take as long as it needs.
+ * `progress_callback` only fires for download progress: once the download finishes, WASM compile/session
+ * init and the first inference pass report nothing until they're done. On older/slower browsers — no
+ * WebGPU, no cross-origin-isolated threads, so onnxruntime-web quietly drops to single-threaded WASM
+ * instead of erroring — that silent stretch can genuinely take longer than a "stuck download" timeout
+ * should be, so these need real headroom rather than a short one meant only to catch a truly dead fetch. */
+const KOKORO_LOAD_STALL_MS = 90000;
+const KOKORO_GENERATION_STALL_MS = 60000;
 
 /** In-memory cache: key = `${language}::${text}`, value = Blob[] (Kokoro) or Blob (Piper). LRU eviction. */
 const ttsCache = new Map();
